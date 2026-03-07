@@ -393,6 +393,12 @@ td {
   font-size: 0.9rem;
 }
 
+.history-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .deploy-meta {
   margin-top: 14px;
   color: var(--muted);

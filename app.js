@@ -868,6 +868,25 @@ function renderHistory() {
       longTargetEntry?.notes ||
       (warmups.length > 0 ? "Session ended before long target." : latestEntry.notes);
     setCellText(row, ".notes", notesText);
+    const actionsCell = row.querySelector(".actions");
+    if (actionsCell) {
+      actionsCell.classList.add("history-actions");
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn ghost small";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", () => deleteSessionGroup(group));
+      actionsCell.appendChild(deleteBtn);
+
+      if (canEditLongTargetActual(longTargetEntry)) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "btn ghost small";
+        editBtn.textContent = "Edit Actual";
+        editBtn.addEventListener("click", () => editLongTargetActual(longTargetEntry));
+        actionsCell.appendChild(editBtn);
+      }
+    }
 
     const warmupToggleBtn = row.querySelector(".warmup-toggle");
     const warmupRow = row.querySelector(".history-warmups-row");
@@ -1008,6 +1027,7 @@ function buildSessionGroups(history) {
   let index = 0;
 
   while (index < history.length) {
+    const groupStartIndex = index;
     const startEntry = history[index];
     if (!startEntry || typeof startEntry !== "object") {
       index += 1;
@@ -1021,7 +1041,7 @@ function buildSessionGroups(history) {
         entries.push(history[index]);
         index += 1;
       }
-      groups.push({ entries });
+      groups.push({ entries, startIndex: groupStartIndex, count: entries.length });
       continue;
     }
 
@@ -1049,7 +1069,7 @@ function buildSessionGroups(history) {
       if (candidateWarmup === 1) break;
     }
 
-    groups.push({ entries });
+    groups.push({ entries, startIndex: groupStartIndex, count: entries.length });
   }
 
   return groups;
@@ -1058,6 +1078,56 @@ function buildSessionGroups(history) {
 function setCellText(root, selector, text) {
   const el = root.querySelector(selector);
   if (el) el.textContent = text;
+}
+
+function canEditLongTargetActual(entry) {
+  return (
+    !!entry &&
+    isLongTargetPhase(entry.phase) &&
+    (entry.outcome === "success" || entry.outcome === "struggle") &&
+    Number.isFinite(entry.target) &&
+    Number.isFinite(entry.actual) &&
+    entry.actual >= entry.target
+  );
+}
+
+function deleteSessionGroup(group) {
+  if (!group || !Number.isFinite(group.startIndex) || !Number.isFinite(group.count) || group.count < 1) return;
+  const label = group.entries[0]?.date
+    ? new Date(group.entries[0].date).toLocaleString()
+    : "this session";
+  const shouldDelete = window.confirm(`Delete session from ${label}?`);
+  if (!shouldDelete) return;
+
+  state.history.splice(group.startIndex, group.count);
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus("Session deleted from history.");
+}
+
+function editLongTargetActual(longTargetEntry) {
+  if (!canEditLongTargetActual(longTargetEntry)) return;
+
+  const promptValue = window.prompt(
+    "Set new long-target actual duration (seconds):",
+    String(clampInt(longTargetEntry.actual, longTargetEntry.target, 7200))
+  );
+  if (promptValue === null) return;
+
+  const parsed = Number.parseInt(promptValue, 10);
+  if (!Number.isFinite(parsed)) {
+    setStatus("Invalid duration. Enter a whole number of seconds.");
+    return;
+  }
+
+  const updatedActual = clampInt(parsed, longTargetEntry.target, 7200);
+  longTargetEntry.actual = updatedActual;
+
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus(`Long-target actual updated to ${formatSeconds(updatedActual)}.`);
 }
 
 function pickNewerState(cloudState, localState) {
