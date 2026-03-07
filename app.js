@@ -11,6 +11,21 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.7.3/firebase-auth.js";
 import { doc, getDoc, getFirestore, setDoc } from "https://www.gstatic.com/firebasejs/11.7.3/firebase-firestore.js";
 import { Chart, registerables } from "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/+esm";
+import {
+  buildSessionGroups,
+  calculateLongSuccessStreak,
+  clampInt,
+  getCalmTargetSeries,
+  getLongestCalmTarget,
+  isoDayFromDate,
+  isLongTargetPhase,
+  normalizeFailureMode,
+  parseOutcomeInput,
+  parseWarmupIndex,
+  randomInt,
+  resolvePreferredState,
+  todayKey,
+} from "./logic.mjs";
 
 const DEFAULT_WARMUP_COUNT = 4;
 const LONG_TARGET_THRESHOLD_SECONDS = 300;
@@ -851,7 +866,7 @@ function renderTimer(seconds) {
 function renderStreak() {
   streakEl.textContent = `Long-session calm streak: ${state.longSuccessStreak}`;
   if (longestCalmTargetEl) {
-    const longestCalmTarget = getLongestCalmTarget();
+    const longestCalmTarget = getLongestCalmTarget(state.history);
     longestCalmTargetEl.textContent = `Longest calm target: ${
       longestCalmTarget === null ? "--:--" : formatSeconds(longestCalmTarget)
     }`;
@@ -1003,7 +1018,7 @@ function renderHistory() {
 function renderCalmTrend() {
   if (!calmTrendEl || !calmTrendChartEl) return;
 
-  const points = getCalmTargetSeries();
+  const points = getCalmTargetSeries(state.history);
   if (points.length < 2) {
     calmTrendEl.hidden = true;
     if (calmTrendChart) {
@@ -1089,61 +1104,6 @@ function renderCalmTrend() {
   });
 }
 
-function buildSessionGroups(history) {
-  if (!Array.isArray(history) || history.length === 0) return [];
-
-  const groups = [];
-  let index = 0;
-
-  while (index < history.length) {
-    const groupStartIndex = index;
-    const startEntry = history[index];
-    if (!startEntry || typeof startEntry !== "object") {
-      index += 1;
-      continue;
-    }
-
-    if (startEntry.sessionId) {
-      const entries = [startEntry];
-      index += 1;
-      while (index < history.length && history[index]?.sessionId === startEntry.sessionId) {
-        entries.push(history[index]);
-        index += 1;
-      }
-      groups.push({ entries, startIndex: groupStartIndex, count: entries.length });
-      continue;
-    }
-
-    const entries = [startEntry];
-    const startDay = startEntry.day || isoDayFromDate(startEntry.date);
-    let warmupCursor = parseWarmupIndex(startEntry.phase);
-
-    index += 1;
-    while (index < history.length) {
-      const candidate = history[index];
-      if (!candidate || typeof candidate !== "object") break;
-      if (candidate.sessionId) break;
-
-      const candidateDay = candidate.day || isoDayFromDate(candidate.date);
-      if (candidateDay !== startDay) break;
-
-      const candidateWarmup = parseWarmupIndex(candidate.phase);
-      if (candidateWarmup === null) break;
-      if (warmupCursor !== null && candidateWarmup >= warmupCursor) break;
-
-      entries.push(candidate);
-      warmupCursor = candidateWarmup;
-      index += 1;
-
-      if (candidateWarmup === 1) break;
-    }
-
-    groups.push({ entries, startIndex: groupStartIndex, count: entries.length });
-  }
-
-  return groups;
-}
-
 function setCellText(root, selector, text) {
   const el = root.querySelector(selector);
   if (el) el.textContent = text;
@@ -1220,43 +1180,8 @@ function editCompletedLongRun(entry) {
   );
 }
 
-function parseOutcomeInput(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "calm" || normalized === "success") return "success";
-  if (normalized === "stress" || normalized === "struggle") return "struggle";
-  return null;
-}
-
 function recalculateLongSuccessStreak() {
-  let streak = 0;
-  for (const entry of state.history) {
-    if (!isLongTargetPhase(entry.phase)) continue;
-    if (entry.outcome === "success") {
-      streak += 1;
-      continue;
-    }
-    break;
-  }
-  state.longSuccessStreak = streak;
-}
-
-function pickNewerState(cloudState, localState) {
-  if (!localState) return cloudState;
-  const cloudUpdatedAt = Number.isFinite(cloudState?.updatedAt) ? cloudState.updatedAt : 0;
-  const localUpdatedAt = Number.isFinite(localState?.updatedAt) ? localState.updatedAt : 0;
-  return localUpdatedAt > cloudUpdatedAt ? localState : cloudState;
-}
-
-function resolvePreferredState(cloudState, localState) {
-  if (!localState) {
-    return { state: cloudState, source: "cloud" };
-  }
-
-  const preferred = pickNewerState(cloudState, localState);
-  const source = preferred === localState ? "local" : "cloud";
-  return { state: preferred, source };
+  state.longSuccessStreak = calculateLongSuccessStreak(state.history);
 }
 
 function localBackupKey(uid) {
@@ -1280,22 +1205,6 @@ function loadLocalBackupState(uid) {
     console.error(error);
     return null;
   }
-}
-
-function getCalmTargetSeries() {
-  return state.history
-    .filter((entry) => isLongTargetPhase(entry.phase) && entry.outcome === "success")
-    .map((entry) => ({
-      date: entry.date,
-      target: clampInt(entry.target, 1, 7200),
-    }))
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-}
-
-function getLongestCalmTarget() {
-  const calmSeries = getCalmTargetSeries();
-  if (calmSeries.length === 0) return null;
-  return calmSeries.reduce((max, entry) => Math.max(max, entry.target), 0);
 }
 
 function setStatus(message) {
@@ -1349,17 +1258,6 @@ function formatSeconds(totalSeconds) {
     .toString()
     .padStart(2, "0");
   return `${minutes}:${seconds}`;
-}
-
-function clampInt(value, min, max) {
-  const n = Number.parseInt(value, 10);
-  if (Number.isNaN(n)) return min;
-  return Math.max(min, Math.min(max, n));
-}
-
-function randomInt(min, max) {
-  if (max <= min) return min;
-  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function sanitizeHistoryEntry(entry) {
@@ -1449,32 +1347,6 @@ function createSessionId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function isoDayFromDate(isoDate) {
-  const date = new Date(isoDate);
-  if (Number.isNaN(date.getTime())) return "";
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function isLongTargetPhase(phase) {
-  return /^Long target/i.test(String(phase || ""));
-}
-
-function parseWarmupIndex(phase) {
-  const match = /^Warmup\s+(\d+)/i.exec(String(phase || ""));
-  return match ? clampInt(match[1], 1, 20) : null;
-}
-
-function todayKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function isTodayIso(isoDate) {
   const date = new Date(isoDate);
   const now = new Date();
@@ -1505,11 +1377,6 @@ function getSuggestedWarmupCount() {
   }
 
   return maxWarmup > 0 ? maxWarmup : DEFAULT_WARMUP_COUNT;
-}
-
-function normalizeFailureMode(value) {
-  if (value === "reduce" || value === "retry" || value === "last-success") return value;
-  return "reduce";
 }
 
 function applyLongFailurePolicy(currentTarget) {
