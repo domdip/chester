@@ -79,12 +79,14 @@ const cloudStatusEl = document.getElementById("cloud-status");
 const signInBtn = document.getElementById("sign-in-btn");
 const signOutBtn = document.getElementById("sign-out-btn");
 const userLabelEl = document.getElementById("user-label");
+const deployStampEl = document.getElementById("deploy-stamp");
 const settingsSaveBtn = settingsForm.querySelector("button[type='submit']");
 
 bootstrap();
 
 async function bootstrap() {
   bindEvents();
+  renderDeployStamp();
   setUiEnabled(false);
   setStatus("Connecting to Firebase...");
 
@@ -504,15 +506,29 @@ function onAbortTrainingSession() {
   if (!shouldAbort) return;
 
   clearInterval(timerInterval);
+  const abortedActual = elapsed;
   running = false;
   awaitingOutcome = false;
   elapsed = 0;
   renderTimer(0);
+
+  state.history.unshift({
+    date: new Date().toISOString(),
+    day: state.dayPlan.dateKey,
+    sessionId: state.dayPlan.sessionId || createSessionId(),
+    phase: session.kind === "long-target" ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
+    target: session.duration,
+    actual: Math.max(0, abortedActual),
+    outcome: "aborted",
+    notes: "Session aborted by user.",
+  });
+
   state.dayPlan.currentIndex = state.dayPlan.sessions.length;
   state.dayPlan.targetOutcome = "aborted";
 
   queueSaveState();
   renderPlan();
+  renderHistory();
   setStatus("Training session aborted. Start a new session when ready.");
 }
 
@@ -743,6 +759,20 @@ function renderStreak() {
   streakEl.textContent = `Long-session calm streak: ${state.longSuccessStreak}`;
 }
 
+function renderDeployStamp() {
+  if (!deployStampEl) return;
+
+  const loadedAt = new Date().toLocaleString();
+  const pageModified =
+    typeof document.lastModified === "string" && document.lastModified.trim()
+      ? new Date(document.lastModified)
+      : null;
+  const isValidModified = pageModified instanceof Date && !Number.isNaN(pageModified.getTime());
+  const modifiedText = isValidModified ? pageModified.toLocaleString() : "unknown";
+
+  deployStampEl.textContent = `Deployment stamp: ${modifiedText} | Loaded: ${loadedAt}`;
+}
+
 function renderHistory() {
   if (!historyBody || !rowTemplate) return;
   historyBody.innerHTML = "";
@@ -779,6 +809,9 @@ function renderHistory() {
     } else if (latestEntry.outcome === "struggle") {
       outcomeText = "Stress";
       outcomeClass = "struggle";
+    } else if (latestEntry.outcome === "aborted") {
+      outcomeText = "Aborted";
+      outcomeClass = "aborted";
     } else if (warmups.length > 0) {
       outcomeText = "Aborted";
       outcomeClass = "aborted";
@@ -808,7 +841,12 @@ function renderHistory() {
     } else {
       warmupToggleBtn.textContent = `Show warmups (${warmups.length})`;
       warmups.forEach((warmupEntry) => {
-        const warmupOutcome = warmupEntry.outcome === "success" ? "Calm" : "Stress";
+        const warmupOutcome =
+          warmupEntry.outcome === "success"
+            ? "Calm"
+            : warmupEntry.outcome === "aborted"
+            ? "Aborted"
+            : "Stress";
         const warmupIndex = parseWarmupIndex(warmupEntry.phase) || 0;
         const item = document.createElement("li");
         item.textContent = `Warmup ${warmupIndex}: ${formatSeconds(warmupEntry.actual)} / ${formatSeconds(

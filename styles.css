@@ -367,6 +367,13 @@ td {
   font-size: 0.9rem;
 }
 
+.deploy-meta {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  text-align: right;
+}
+
 @media (max-width: 700px) {
   .app-shell {
     padding: 16px 12px 40px;
