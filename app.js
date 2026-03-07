@@ -19,8 +19,8 @@ const defaultState = {
   settings: {
     startDuration: 20,
     successIncreasePct: 20,
-    failureMode: "retry",
-    failureReducePct: 20,
+    failureMode: "reduce",
+    failureReducePct: 10,
   },
   nextLongTarget: 20,
   dayPlan: null,
@@ -1249,7 +1249,8 @@ function getSuggestedWarmupCount() {
 }
 
 function normalizeFailureMode(value) {
-  return value === "reduce" ? "reduce" : "retry";
+  if (value === "reduce" || value === "retry" || value === "last-success") return value;
+  return "reduce";
 }
 
 function applyLongFailurePolicy(currentTarget) {
@@ -1269,6 +1270,32 @@ function applyLongFailurePolicy(currentTarget) {
     setStatus("Long target struggled. Same long target will be retried tomorrow.");
     return;
   }
+
+  if (mode === "last-success") {
+    const lastSuccessfulTarget = getLastSuccessfulLongTarget();
+    if (lastSuccessfulTarget !== null) {
+      state.nextLongTarget = lastSuccessfulTarget;
+      setStatus(
+        `Long target struggled. Next long target set to last successful duration (${formatSeconds(
+          state.nextLongTarget
+        )}).`
+      );
+      return;
+    }
+
+    state.nextLongTarget = currentTarget;
+    setStatus("Long target struggled. No previous success found, so the same target will be retried.");
+    return;
+  }
+}
+
+function getLastSuccessfulLongTarget() {
+  for (const entry of state.history) {
+    if (isLongTargetPhase(entry.phase) && entry.outcome === "success") {
+      return clampInt(entry.target, 3, 7200);
+    }
+  }
+  return null;
 }
 
 function isFirebaseConfigValid(config) {
