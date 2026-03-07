@@ -179,7 +179,12 @@ async function handleAuthStateChange(user) {
   try {
     const cloudState = await loadStateFromCloud();
     if (cloudState) {
-      state = pickNewerState(cloudState, localBackupState);
+      const resolved = resolvePreferredState(cloudState, localBackupState);
+      state = resolved.state;
+      if (resolved.source === "local") {
+        setCloudStatus("Syncing local changes to cloud...");
+        queueSaveState();
+      }
     } else if (localBackupState) {
       state = localBackupState;
       queueSaveState();
@@ -1181,6 +1186,16 @@ function pickNewerState(cloudState, localState) {
   const cloudUpdatedAt = Number.isFinite(cloudState?.updatedAt) ? cloudState.updatedAt : 0;
   const localUpdatedAt = Number.isFinite(localState?.updatedAt) ? localState.updatedAt : 0;
   return localUpdatedAt > cloudUpdatedAt ? localState : cloudState;
+}
+
+function resolvePreferredState(cloudState, localState) {
+  if (!localState) {
+    return { state: cloudState, source: "cloud" };
+  }
+
+  const preferred = pickNewerState(cloudState, localState);
+  const source = preferred === localState ? "local" : "cloud";
+  return { state: preferred, source };
 }
 
 function localBackupKey(uid) {
