@@ -336,6 +336,11 @@ td {
   font-weight: 600;
 }
 
+.outcome.aborted {
+  color: #8b5e3c;
+  font-weight: 700;
+}
+
 .history-session-row .warmups {
   white-space: nowrap;
 }

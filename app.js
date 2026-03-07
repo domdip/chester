@@ -766,18 +766,32 @@ function renderHistory() {
     let outcomeClass = "neutral";
 
     if (longTargetEntry) {
-      outcomeText = longTargetEntry.outcome === "success" ? "Calm" : "Stress";
-      outcomeClass = longTargetEntry.outcome;
+      if (longTargetEntry.outcome === "success") {
+        outcomeText = "Calm";
+        outcomeClass = "success";
+      } else if (longTargetEntry.outcome === "aborted") {
+        outcomeText = "Aborted";
+        outcomeClass = "aborted";
+      } else {
+        outcomeText = "Stress";
+        outcomeClass = "struggle";
+      }
     } else if (latestEntry.outcome === "struggle") {
       outcomeText = "Stress";
       outcomeClass = "struggle";
+    } else if (warmups.length > 0) {
+      outcomeText = "Aborted";
+      outcomeClass = "aborted";
     }
     if (outcomeCell) {
       outcomeCell.textContent = outcomeText;
       outcomeCell.className = `outcome ${outcomeClass}`;
     }
 
-    setCellText(row, ".notes", longTargetEntry ? longTargetEntry.notes : latestEntry.notes);
+    const notesText =
+      longTargetEntry?.notes ||
+      (warmups.length > 0 ? "Session ended before long target." : latestEntry.notes);
+    setCellText(row, ".notes", notesText);
 
     const warmupToggleBtn = row.querySelector(".warmup-toggle");
     const warmupRow = row.querySelector(".history-warmups-row");
@@ -940,7 +954,8 @@ function sanitizeHistoryEntry(entry) {
     typeof entry.day === "string" && entry.day.trim() ? entry.day : isoDayFromDate(date) || todayKey();
   const phase = typeof entry.phase === "string" && entry.phase.trim() ? entry.phase : "Long target";
   const notes = typeof entry.notes === "string" ? entry.notes : "";
-  const outcome = entry.outcome === "success" ? "success" : "struggle";
+  const outcome =
+    entry.outcome === "success" || entry.outcome === "aborted" ? entry.outcome : "struggle";
   const sessionId =
     typeof entry.sessionId === "string" && entry.sessionId.trim() ? entry.sessionId.trim() : undefined;
 
