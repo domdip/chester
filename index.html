@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Separation Training Companion</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">Sub-threshold protocol companion</p>
+        <h1>Separation Anxiety Training</h1>
+        <p class="subtitle">
+          Build calm-alone tolerance gradually with tiny duration increases and careful observation.
+        </p>
+        <div class="auth-row">
+          <button id="sign-in-btn" class="btn ghost small">Sign in with Google</button>
+          <button id="sign-out-btn" class="btn ghost small" disabled>Sign out</button>
+          <span id="user-label">Not signed in</span>
+        </div>
+      </header>
+
+      <section class="panel protocol">
+        <h2>Protocol Rules</h2>
+        <ul>
+          <li>Stay below panic threshold. End before signs of distress.</li>
+          <li>Each day uses 4 short random warmups before 1 long target session.</li>
+          <li>Only the long target session controls next-day progression.</li>
+          <li>If the long target is calm, tomorrow's long target increases by a percentage.</li>
+        </ul>
+      </section>
+
+      <section class="panel controls">
+        <div class="settings-head">
+          <h2 id="settings-title">Session Setup</h2>
+          <button
+            id="settings-toggle-btn"
+            class="btn ghost small icon-btn"
+            type="button"
+            hidden
+            aria-label="Toggle settings"
+            title="Settings"
+          >
+            ⚙
+          </button>
+        </div>
+        <form id="settings-form">
+          <label id="start-duration-row">
+            Starting long target (seconds)
+            <input id="start-duration" type="number" min="3" max="1800" step="1" required />
+          </label>
+          <label>
+            Long-session success increase (%)
+            <input id="success-increase-pct" type="number" min="1" max="100" step="1" required />
+          </label>
+          <label>
+            Long-session failure action
+            <select id="failure-mode">
+              <option value="reduce">Reduce next target by %</option>
+              <option value="retry">Retry same target</option>
+            </select>
+          </label>
+          <label>
+            Failure reduction (%)
+            <input id="failure-reduce-pct" type="number" min="1" max="100" step="1" required />
+          </label>
+          <button type="submit" class="btn primary">Save Settings</button>
+        </form>
+      </section>
+
+      <section class="panel trainer">
+        <div class="trainer-head">
+          <h2>Current Training Session</h2>
+          <div class="pill-row">
+            <div id="plan-progress-pill" class="pill">0 / 5 complete today</div>
+            <div id="cloud-status" class="pill">Cloud: connecting...</div>
+          </div>
+        </div>
+
+        <div class="target-block" id="target-block">
+          <p id="session-type-label">Warmup Session</p>
+          <strong id="target-duration">00:00</strong>
+          <p>Today's long target: <span id="day-target-duration">00:00</span></p>
+        </div>
+
+        <div class="timer" id="timer">00:00</div>
+
+        <div class="button-row" id="session-controls">
+          <button id="start-btn" class="btn primary">Start Step</button>
+          <button id="stop-btn" class="btn ghost" disabled>Stop Early</button>
+          <button id="abort-session-btn" class="btn ghost small push-right">Abort Training Session</button>
+        </div>
+
+        <div class="button-row result-actions" id="result-actions">
+          <button id="success-btn" class="btn success" disabled>Mark Calm Success</button>
+          <button id="struggle-btn" class="btn danger" disabled>Mark Stress Signal</button>
+        </div>
+
+        <div id="completion-panel" class="completion-panel" hidden>
+          <p id="completion-message" class="completion-message"></p>
+          <div class="completion-config-row">
+            <label class="completion-input">
+              Long target (seconds)
+              <input id="next-long-target-input" type="number" min="3" max="7200" step="1" />
+            </label>
+            <label class="completion-input warmup-input">
+              Warmups
+              <input id="next-warmup-count-input" type="number" min="1" max="20" step="1" />
+            </label>
+          </div>
+          <button id="new-ladder-btn" class="btn primary">Start New Session</button>
+        </div>
+
+        <p id="status-message" class="status">Configure settings to begin.</p>
+      </section>
+
+      <section class="panel history">
+        <h2>Session History</h2>
+        <div class="history-meta">
+          <span id="streak">Long-session calm streak: 0</span>
+          <button id="reset-btn" class="btn ghost small">Reset All Data</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Phase</th>
+                <th>Target</th>
+                <th>Actual</th>
+                <th>Outcome</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <template id="row-template">
+      <tr>
+        <td class="date"></td>
+        <td class="phase"></td>
+        <td class="target"></td>
+        <td class="actual"></td>
+        <td class="outcome"></td>
+        <td class="notes"></td>
+      </tr>
+    </template>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
