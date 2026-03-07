@@ -295,9 +295,9 @@ function sanitizeState(raw) {
     : settings.startDuration;
   const history = Array.isArray(incoming.history) ? incoming.history.slice(0, 500) : [];
   const uiRaw = incoming.ui && typeof incoming.ui === "object" ? incoming.ui : {};
-  const setupCompleted =
-    uiRaw.setupCompleted === true || history.length > 0 || incoming.dayPlan !== null;
-  const setupExpanded = uiRaw.setupExpanded === true ? true : !setupCompleted;
+  const hasExistingData = history.length > 0 || incoming.dayPlan !== null;
+  const setupCompleted = uiRaw.setupCompleted === true || hasExistingData;
+  const setupExpanded = setupCompleted ? false : true;
 
   return {
     ...base,
