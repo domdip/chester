@@ -851,12 +851,19 @@ function renderPlan() {
     completionMessageEl.textContent = "Ready to begin? Start your first session.";
   }
   newLadderBtn.textContent = "Start New Session";
-  nextLongTargetInput.value = String(clampInt(state.nextLongTarget, 3, 7200));
-  nextWarmupCountInput.value = String(getSuggestedWarmupCount());
+  if (!isEditingNextSessionConfig()) {
+    nextLongTargetInput.value = String(clampInt(state.nextLongTarget, 3, 7200));
+    nextWarmupCountInput.value = String(getSuggestedWarmupCount());
+  }
   nextLongTargetInput.disabled = !isUiEnabled();
   nextWarmupCountInput.disabled = !isUiEnabled();
 
   newLadderBtn.disabled = !isUiEnabled();
+}
+
+function isEditingNextSessionConfig() {
+  const active = document.activeElement;
+  return active === nextLongTargetInput || active === nextWarmupCountInput;
 }
 
 function renderTimer(seconds) {
