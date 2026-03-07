@@ -322,7 +322,7 @@ select {
   color: #2a3944;
 }
 
-.calm-trend svg {
+.calm-trend canvas {
   display: block;
   width: 100%;
   height: auto;
