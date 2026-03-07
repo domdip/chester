@@ -299,7 +299,9 @@ function sanitizeState(raw) {
   const candidateTarget = Number.isFinite(incoming.nextLongTarget)
     ? incoming.nextLongTarget
     : settings.startDuration;
-  const history = Array.isArray(incoming.history) ? incoming.history.slice(0, 500) : [];
+  const history = Array.isArray(incoming.history)
+    ? incoming.history.slice(0, 500).map(sanitizeHistoryEntry).filter(Boolean)
+    : [];
   const uiRaw = incoming.ui && typeof incoming.ui === "object" ? incoming.ui : {};
   const hasExistingData = history.length > 0 || incoming.dayPlan !== null;
   const setupCompleted = uiRaw.setupCompleted === true || hasExistingData;
@@ -742,6 +744,7 @@ function renderStreak() {
 }
 
 function renderHistory() {
+  if (!historyBody || !rowTemplate) return;
   historyBody.innerHTML = "";
 
   const sessionGroups = buildSessionGroups(state.history).slice(0, 100);
@@ -753,9 +756,10 @@ function renderHistory() {
       .sort((a, b) => parseWarmupIndex(a.phase) - parseWarmupIndex(b.phase));
 
     const row = rowTemplate.content.cloneNode(true);
-    row.querySelector(".date").textContent = new Date(latestEntry.date).toLocaleString();
-    row.querySelector(".target").textContent = longTargetEntry ? formatSeconds(longTargetEntry.target) : "-";
-    row.querySelector(".actual").textContent = longTargetEntry ? formatSeconds(longTargetEntry.actual) : "-";
+    setCellText(row, ".date", new Date(latestEntry.date).toLocaleString());
+    setCellText(row, ".target", longTargetEntry ? formatSeconds(longTargetEntry.target) : "-");
+    setCellText(row, ".actual", longTargetEntry ? formatSeconds(longTargetEntry.actual) : "-");
+    setCellText(row, ".phase", longTargetEntry ? "Long target" : latestEntry.phase || "-");
 
     const outcomeCell = row.querySelector(".outcome");
     let outcomeText = "In progress";
@@ -768,14 +772,21 @@ function renderHistory() {
       outcomeText = "Stress";
       outcomeClass = "struggle";
     }
-    outcomeCell.textContent = outcomeText;
-    outcomeCell.className = `outcome ${outcomeClass}`;
+    if (outcomeCell) {
+      outcomeCell.textContent = outcomeText;
+      outcomeCell.className = `outcome ${outcomeClass}`;
+    }
 
-    row.querySelector(".notes").textContent = longTargetEntry ? longTargetEntry.notes : latestEntry.notes;
+    setCellText(row, ".notes", longTargetEntry ? longTargetEntry.notes : latestEntry.notes);
 
     const warmupToggleBtn = row.querySelector(".warmup-toggle");
     const warmupRow = row.querySelector(".history-warmups-row");
     const warmupList = row.querySelector(".warmup-list");
+
+    if (!warmupToggleBtn || !warmupRow || !warmupList) {
+      historyBody.appendChild(row);
+      return;
+    }
 
     if (warmups.length === 0) {
       warmupToggleBtn.textContent = "No warmups";
@@ -860,6 +871,11 @@ function buildSessionGroups(history) {
   return groups;
 }
 
+function setCellText(root, selector, text) {
+  const el = root.querySelector(selector);
+  if (el) el.textContent = text;
+}
+
 function setStatus(message) {
   statusMessage.textContent = message;
 }
@@ -911,6 +927,33 @@ function clampInt(value, min, max) {
 function randomInt(min, max) {
   if (max <= min) return min;
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function sanitizeHistoryEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+
+  const date =
+    typeof entry.date === "string" && !Number.isNaN(new Date(entry.date).getTime())
+      ? entry.date
+      : new Date().toISOString();
+  const day =
+    typeof entry.day === "string" && entry.day.trim() ? entry.day : isoDayFromDate(date) || todayKey();
+  const phase = typeof entry.phase === "string" && entry.phase.trim() ? entry.phase : "Long target";
+  const notes = typeof entry.notes === "string" ? entry.notes : "";
+  const outcome = entry.outcome === "success" ? "success" : "struggle";
+  const sessionId =
+    typeof entry.sessionId === "string" && entry.sessionId.trim() ? entry.sessionId.trim() : undefined;
+
+  return {
+    date,
+    day,
+    sessionId,
+    phase,
+    target: clampInt(entry.target, 1, 7200),
+    actual: clampInt(entry.actual, 0, 7200),
+    outcome,
+    notes,
+  };
 }
 
 function describeError(error) {
