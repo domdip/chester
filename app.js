@@ -1089,8 +1089,7 @@ function canEditCompletedLongEntry(entry) {
     isLongTargetPhase(entry.phase) &&
     (entry.outcome === "success" || entry.outcome === "struggle") &&
     Number.isFinite(entry.target) &&
-    Number.isFinite(entry.actual) &&
-    entry.actual >= entry.target
+    Number.isFinite(entry.actual)
   );
 }
 
@@ -1115,7 +1114,7 @@ function editCompletedLongRun(entry) {
 
   const promptValue = window.prompt(
     "Set new actual duration (seconds):",
-    String(clampInt(entry.actual, entry.target, 7200))
+    String(clampInt(entry.actual, 0, 7200))
   );
   if (promptValue === null) return;
 
@@ -1125,7 +1124,7 @@ function editCompletedLongRun(entry) {
     return;
   }
 
-  const updatedActual = clampInt(parsed, entry.target, 7200);
+  const updatedActual = clampInt(parsed, 0, 7200);
   const currentOutcomeLabel = entry.outcome === "success" ? "calm" : "stress";
   const outcomeInput = window.prompt(
     "Set outcome (`calm` or `stress`):",
