@@ -301,13 +301,18 @@ function queueSaveState() {
   state.updatedAt = payload.updatedAt;
   persistLocalBackupState(currentUid, payload);
   if (!stateDocRef) return;
+  const firestorePayload = stripUndefinedDeep(payload);
 
   saveChain = saveChain
-    .then(() => setDoc(stateDocRef, payload))
+    .then(() => setDoc(stateDocRef, firestorePayload))
     .catch((error) => {
       console.error(error);
       setCloudStatus("Cloud save failed");
-      setStatus("Save failed. Check network and Firebase rules.");
+      if (isClientDataError(error)) {
+        setStatus(`Save failed due to invalid local data (${describeError(error)}).`);
+        return;
+      }
+      setStatus(`Save failed (${describeError(error)}). Check network and Firebase rules.`);
     });
 }
 
@@ -1303,19 +1308,19 @@ function sanitizeHistoryEntry(entry) {
   const notes = typeof entry.notes === "string" ? entry.notes : "";
   const outcome =
     entry.outcome === "success" || entry.outcome === "aborted" ? entry.outcome : "struggle";
-  const sessionId =
-    typeof entry.sessionId === "string" && entry.sessionId.trim() ? entry.sessionId.trim() : undefined;
-
-  return {
+  const sanitized = {
     date,
     day,
-    sessionId,
     phase,
     target: clampInt(entry.target, 1, 7200),
     actual: clampInt(entry.actual, 0, 7200),
     outcome,
     notes,
   };
+  if (typeof entry.sessionId === "string" && entry.sessionId.trim()) {
+    sanitized.sessionId = entry.sessionId.trim();
+  }
+  return sanitized;
 }
 
 function describeError(error) {
@@ -1343,6 +1348,34 @@ function describeError(error) {
   }
 
   return `unclassified ${typeof error} error`;
+}
+
+function isClientDataError(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const message = typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  return (
+    code === "invalid-argument" ||
+    message.includes("unsupported field value") ||
+    message.includes("undefined") ||
+    message.includes("invalid data")
+  );
+}
+
+function stripUndefinedDeep(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripUndefinedDeep(item))
+      .filter((item) => item !== undefined);
+  }
+  if (value && typeof value === "object") {
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      const cleaned = stripUndefinedDeep(item);
+      if (cleaned !== undefined) output[key] = cleaned;
+    }
+    return output;
+  }
+  return value === undefined ? undefined : value;
 }
 
 function createSessionId() {
