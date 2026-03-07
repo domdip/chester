@@ -96,13 +96,21 @@ async function bootstrap() {
       console.error(error);
       setStatus(`Sign-in redirect failed (${error.code || "unknown"}).`);
     }
-    onAuthStateChanged(auth, (user) => {
-      handleAuthStateChange(user).catch((error) => {
+    onAuthStateChanged(
+      auth,
+      (user) => {
+        handleAuthStateChange(user).catch((error) => {
+          console.error(error);
+          setCloudStatus("Cloud unavailable");
+          setStatus(`Auth sync failed (${describeError(error)}).`);
+        });
+      },
+      (error) => {
         console.error(error);
         setCloudStatus("Cloud unavailable");
-        setStatus(`Auth sync failed (${describeError(error)}).`);
-      });
-    });
+        setStatus(`Auth state listener failed (${describeError(error)}).`);
+      }
+    );
   } catch (error) {
     console.error(error);
     state = makeDefaultState();
@@ -906,16 +914,30 @@ function randomInt(min, max) {
 }
 
 function describeError(error) {
-  if (!error) return "unknown";
+  if (error == null) return "no error details";
   if (typeof error === "string") return error;
 
   const code = typeof error.code === "string" && error.code.trim() ? error.code.trim() : "";
   const message = typeof error.message === "string" && error.message.trim() ? error.message.trim() : "";
+  const name = typeof error.name === "string" && error.name.trim() ? error.name.trim() : "";
+  const asString = String(error);
+  const hasUsefulString = asString && asString !== "[object Object]";
 
   if (code && message) return `${code}: ${message}`;
   if (code) return code;
   if (message) return message;
-  return "unknown";
+  if (name && hasUsefulString) return `${name}: ${asString}`;
+  if (name) return name;
+  if (hasUsefulString) return asString;
+
+  try {
+    const compact = JSON.stringify(error);
+    if (compact && compact !== "{}") return compact;
+  } catch (jsonError) {
+    console.error(jsonError);
+  }
+
+  return `unclassified ${typeof error} error`;
 }
 
 function createSessionId() {
