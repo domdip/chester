@@ -31,6 +31,12 @@ body {
   overflow-x: hidden;
 }
 
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+}
+
 .app-shell {
   max-width: 980px;
   width: 100%;
@@ -159,6 +165,8 @@ select {
   border-radius: 100px;
   padding: 6px 11px;
   font-size: 0.9rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .pill-row {
@@ -296,6 +304,7 @@ select {
 
 .table-wrap {
   overflow: auto;
+  max-width: 100%;
 }
 
 table {
@@ -330,5 +339,15 @@ td {
   .hero,
   .panel {
     padding: 14px;
+  }
+
+  table {
+    min-width: 0;
+  }
+
+  th,
+  td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 }
