@@ -13,6 +13,7 @@ import { doc, getDoc, getFirestore, setDoc } from "https://www.gstatic.com/fireb
 
 const DEFAULT_WARMUP_COUNT = 4;
 const LONG_TARGET_THRESHOLD_SECONDS = 300;
+const LOCAL_STATE_KEY_PREFIX = "separation-training-state-v1";
 
 const defaultState = {
   settings: {
@@ -25,6 +26,7 @@ const defaultState = {
   dayPlan: null,
   history: [],
   longSuccessStreak: 0,
+  updatedAt: 0,
   ui: {
     setupCompleted: false,
     setupExpanded: true,
@@ -168,16 +170,34 @@ async function handleAuthStateChange(user) {
   setAuthUi(true, user.email || user.displayName || user.uid.slice(0, 6));
   setCloudStatus(`Signed in (${currentUid.slice(0, 6)}), loading...`);
   setStatus("Signed in. Loading cloud data...");
+  const localBackupState = loadLocalBackupState(currentUid);
 
   try {
-    await loadStateFromCloud();
+    const cloudState = await loadStateFromCloud();
+    if (cloudState) {
+      state = pickNewerState(cloudState, localBackupState);
+    } else if (localBackupState) {
+      state = localBackupState;
+      queueSaveState();
+      setStatus("Cloud state missing. Restored from local backup.");
+    } else {
+      state = makeDefaultState();
+      queueSaveState();
+    }
   } catch (error) {
     console.error(error);
-    state = makeDefaultState();
-    ensureDayPlan();
-    queueSaveState();
-    setCloudStatus("Signed in, cloud read failed");
-    setStatus(`Signed in, but cloud read failed (${describeError(error)}). Check Firestore rules.`);
+    if (localBackupState) {
+      state = localBackupState;
+      setCloudStatus("Cloud read failed, using local backup");
+      setStatus(`Cloud read failed (${describeError(error)}). Restored local backup and will retry sync.`);
+      queueSaveState();
+    } else {
+      state = makeDefaultState();
+      ensureDayPlan();
+      queueSaveState();
+      setCloudStatus("Signed in, cloud read failed");
+      setStatus(`Signed in, but cloud read failed (${describeError(error)}). Check Firestore rules.`);
+    }
   }
 
   ensureDayPlan();
@@ -258,21 +278,20 @@ async function loadStateFromCloud() {
 
   const snapshot = await getDoc(stateDocRef);
   if (!snapshot.exists()) {
-    state = makeDefaultState();
-    queueSaveState();
-    return;
+    return null;
   }
 
-  state = sanitizeState(snapshot.data());
+  return sanitizeState(snapshot.data());
 }
 
 function queueSaveState() {
-  if (!stateDocRef) return;
-
   const payload = {
     ...state,
     updatedAt: Date.now(),
   };
+  state.updatedAt = payload.updatedAt;
+  persistLocalBackupState(currentUid, payload);
+  if (!stateDocRef) return;
 
   saveChain = saveChain
     .then(() => setDoc(stateDocRef, payload))
@@ -321,6 +340,7 @@ function sanitizeState(raw) {
     longSuccessStreak: Number.isFinite(incoming.longSuccessStreak)
       ? Math.max(0, Math.floor(incoming.longSuccessStreak))
       : 0,
+    updatedAt: Number.isFinite(incoming.updatedAt) ? Math.max(0, Math.floor(incoming.updatedAt)) : 0,
     ui: {
       setupCompleted,
       setupExpanded,
@@ -1004,6 +1024,36 @@ function buildSessionGroups(history) {
 function setCellText(root, selector, text) {
   const el = root.querySelector(selector);
   if (el) el.textContent = text;
+}
+
+function pickNewerState(cloudState, localState) {
+  if (!localState) return cloudState;
+  const cloudUpdatedAt = Number.isFinite(cloudState?.updatedAt) ? cloudState.updatedAt : 0;
+  const localUpdatedAt = Number.isFinite(localState?.updatedAt) ? localState.updatedAt : 0;
+  return localUpdatedAt > cloudUpdatedAt ? localState : cloudState;
+}
+
+function localBackupKey(uid) {
+  return `${LOCAL_STATE_KEY_PREFIX}:${uid || "anon"}`;
+}
+
+function persistLocalBackupState(uid, payload) {
+  try {
+    window.localStorage.setItem(localBackupKey(uid), JSON.stringify(payload));
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function loadLocalBackupState(uid) {
+  try {
+    const raw = window.localStorage.getItem(localBackupKey(uid));
+    if (!raw) return null;
+    return sanitizeState(JSON.parse(raw));
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
 }
 
 function getCalmTargetSeries() {
