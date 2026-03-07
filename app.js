@@ -100,7 +100,7 @@ async function bootstrap() {
       handleAuthStateChange(user).catch((error) => {
         console.error(error);
         setCloudStatus("Cloud unavailable");
-        setStatus(`Auth sync failed (${error.code || "unknown"}).`);
+        setStatus(`Auth sync failed (${describeError(error)}).`);
       });
     });
   } catch (error) {
@@ -164,9 +164,7 @@ async function handleAuthStateChange(user) {
     ensureDayPlan();
     queueSaveState();
     setCloudStatus("Signed in, cloud read failed");
-    setStatus(
-      `Signed in, but cloud read failed (${error.code || "unknown"}). Check Firestore rules.`
-    );
+    setStatus(`Signed in, but cloud read failed (${describeError(error)}). Check Firestore rules.`);
   }
 
   ensureDayPlan();
@@ -905,6 +903,19 @@ function clampInt(value, min, max) {
 function randomInt(min, max) {
   if (max <= min) return min;
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function describeError(error) {
+  if (!error) return "unknown";
+  if (typeof error === "string") return error;
+
+  const code = typeof error.code === "string" && error.code.trim() ? error.code.trim() : "";
+  const message = typeof error.message === "string" && error.message.trim() ? error.message.trim() : "";
+
+  if (code && message) return `${code}: ${message}`;
+  if (code) return code;
+  if (message) return message;
+  return "unknown";
 }
 
 function createSessionId() {
