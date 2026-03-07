@@ -124,8 +124,15 @@
       <section class="panel history">
         <h2>Session History</h2>
         <div class="history-meta">
-          <span id="streak">Long-session calm streak: 0</span>
+          <div class="history-stats">
+            <span id="streak">Long-session calm streak: 0</span>
+            <span id="longest-calm-target">Longest calm target: --:--</span>
+          </div>
           <button id="reset-btn" class="btn ghost small">Reset All Data</button>
+        </div>
+        <div id="calm-trend" class="calm-trend" hidden>
+          <h3>Successful Calm Targets Over Time</h3>
+          <svg id="calm-trend-chart" viewBox="0 0 640 220" role="img" aria-label="Calm target trend chart"></svg>
         </div>
         <div class="table-wrap">
           <table>

@@ -73,6 +73,9 @@ const statusMessage = document.getElementById("status-message");
 const historyBody = document.getElementById("history-body");
 const rowTemplate = document.getElementById("row-template");
 const streakEl = document.getElementById("streak");
+const longestCalmTargetEl = document.getElementById("longest-calm-target");
+const calmTrendEl = document.getElementById("calm-trend");
+const calmTrendChartEl = document.getElementById("calm-trend-chart");
 const planProgressPill = document.getElementById("plan-progress-pill");
 const resetBtn = document.getElementById("reset-btn");
 const cloudStatusEl = document.getElementById("cloud-status");
@@ -757,6 +760,13 @@ function renderTimer(seconds) {
 
 function renderStreak() {
   streakEl.textContent = `Long-session calm streak: ${state.longSuccessStreak}`;
+  if (longestCalmTargetEl) {
+    const longestCalmTarget = getLongestCalmTarget();
+    longestCalmTargetEl.textContent = `Longest calm target: ${
+      longestCalmTarget === null ? "--:--" : formatSeconds(longestCalmTarget)
+    }`;
+  }
+  renderCalmTrend();
 }
 
 function renderDeployStamp() {
@@ -869,6 +879,74 @@ function renderHistory() {
   });
 }
 
+function renderCalmTrend() {
+  if (!calmTrendEl || !calmTrendChartEl) return;
+
+  const points = getCalmTargetSeries();
+  if (points.length < 2) {
+    calmTrendEl.hidden = true;
+    calmTrendChartEl.innerHTML = "";
+    return;
+  }
+
+  calmTrendEl.hidden = false;
+  const width = 640;
+  const height = 220;
+  const padLeft = 52;
+  const padRight = 16;
+  const padTop = 14;
+  const padBottom = 36;
+  const innerWidth = width - padLeft - padRight;
+  const innerHeight = height - padTop - padBottom;
+
+  const values = points.map((point) => point.target);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const valueSpan = Math.max(1, maxValue - minValue);
+  const yMin = Math.max(0, minValue - Math.ceil(valueSpan * 0.1));
+  const yMax = maxValue + Math.ceil(valueSpan * 0.1);
+  const yRange = Math.max(1, yMax - yMin);
+
+  const pathPoints = points.map((point, index) => {
+    const x =
+      padLeft + (points.length === 1 ? innerWidth / 2 : (index / (points.length - 1)) * innerWidth);
+    const y = padTop + ((yMax - point.target) / yRange) * innerHeight;
+    return { x, y, target: point.target, date: point.date };
+  });
+
+  const polyline = pathPoints.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const xStart = pathPoints[0].x.toFixed(1);
+  const xEnd = pathPoints[pathPoints.length - 1].x.toFixed(1);
+  const yTop = padTop.toFixed(1);
+  const yBottom = (padTop + innerHeight).toFixed(1);
+  const yMinLabelY = (padTop + innerHeight + 16).toFixed(1);
+  const yMaxLabelY = (padTop + 12).toFixed(1);
+  const firstDate = formatShortDate(points[0].date);
+  const lastDate = formatShortDate(points[points.length - 1].date);
+
+  const dots = pathPoints
+    .map(
+      (point) =>
+        `<circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(
+          1
+        )}" r="3.5" fill="#a85f28"><title>${formatShortDate(point.date)}: ${formatSeconds(
+          point.target
+        )}</title></circle>`
+    )
+    .join("");
+
+  calmTrendChartEl.innerHTML = `
+    <line x1="${xStart}" y1="${yBottom}" x2="${xEnd}" y2="${yBottom}" stroke="#c4b39d" stroke-width="1" />
+    <line x1="${padLeft}" y1="${yTop}" x2="${padLeft}" y2="${yBottom}" stroke="#c4b39d" stroke-width="1" />
+    <polyline points="${polyline}" fill="none" stroke="#a85f28" stroke-width="2.5" stroke-linecap="round" />
+    ${dots}
+    <text x="${padLeft}" y="${yMaxLabelY}" fill="#6f7d87" font-size="12">${formatSeconds(yMax)}</text>
+    <text x="${padLeft}" y="${yMinLabelY}" fill="#6f7d87" font-size="12">${formatSeconds(yMin)}</text>
+    <text x="${xStart}" y="${height - 10}" fill="#6f7d87" font-size="12">${firstDate}</text>
+    <text x="${xEnd}" y="${height - 10}" fill="#6f7d87" font-size="12" text-anchor="end">${lastDate}</text>
+  `;
+}
+
 function buildSessionGroups(history) {
   if (!Array.isArray(history) || history.length === 0) return [];
 
@@ -926,6 +1004,28 @@ function buildSessionGroups(history) {
 function setCellText(root, selector, text) {
   const el = root.querySelector(selector);
   if (el) el.textContent = text;
+}
+
+function getCalmTargetSeries() {
+  return state.history
+    .filter((entry) => isLongTargetPhase(entry.phase) && entry.outcome === "success")
+    .map((entry) => ({
+      date: entry.date,
+      target: clampInt(entry.target, 1, 7200),
+    }))
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+function getLongestCalmTarget() {
+  const calmSeries = getCalmTargetSeries();
+  if (calmSeries.length === 0) return null;
+  return calmSeries.reduce((max, entry) => Math.max(max, entry.target), 0);
+}
+
+function formatShortDate(isoDate) {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return "--";
+  return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 function setStatus(message) {
