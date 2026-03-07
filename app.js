@@ -878,12 +878,12 @@ function renderHistory() {
       deleteBtn.addEventListener("click", () => deleteSessionGroup(group));
       actionsCell.appendChild(deleteBtn);
 
-      if (canEditLongTargetActual(longTargetEntry)) {
+      if (canEditCompletedLongEntry(longTargetEntry)) {
         const editBtn = document.createElement("button");
         editBtn.type = "button";
         editBtn.className = "btn ghost small";
-        editBtn.textContent = "Edit Actual";
-        editBtn.addEventListener("click", () => editLongTargetActual(longTargetEntry));
+        editBtn.textContent = "Edit Long Run";
+        editBtn.addEventListener("click", () => editCompletedLongRun(longTargetEntry));
         actionsCell.appendChild(editBtn);
       }
     }
@@ -911,9 +911,12 @@ function renderHistory() {
             : "Stress";
         const warmupIndex = parseWarmupIndex(warmupEntry.phase) || 0;
         const item = document.createElement("li");
-        item.textContent = `Warmup ${warmupIndex}: ${formatSeconds(warmupEntry.actual)} / ${formatSeconds(
+        const itemText = document.createElement("span");
+        itemText.textContent = `Warmup ${warmupIndex}: ${formatSeconds(warmupEntry.actual)} / ${formatSeconds(
           warmupEntry.target
         )} (${warmupOutcome})`;
+        item.appendChild(itemText);
+
         warmupList.appendChild(item);
       });
 
@@ -1080,7 +1083,7 @@ function setCellText(root, selector, text) {
   if (el) el.textContent = text;
 }
 
-function canEditLongTargetActual(entry) {
+function canEditCompletedLongEntry(entry) {
   return (
     !!entry &&
     isLongTargetPhase(entry.phase) &&
@@ -1100,18 +1103,19 @@ function deleteSessionGroup(group) {
   if (!shouldDelete) return;
 
   state.history.splice(group.startIndex, group.count);
+  recalculateLongSuccessStreak();
   queueSaveState();
   renderHistory();
   renderStreak();
   setStatus("Session deleted from history.");
 }
 
-function editLongTargetActual(longTargetEntry) {
-  if (!canEditLongTargetActual(longTargetEntry)) return;
+function editCompletedLongRun(entry) {
+  if (!canEditCompletedLongEntry(entry)) return;
 
   const promptValue = window.prompt(
-    "Set new long-target actual duration (seconds):",
-    String(clampInt(longTargetEntry.actual, longTargetEntry.target, 7200))
+    "Set new actual duration (seconds):",
+    String(clampInt(entry.actual, entry.target, 7200))
   );
   if (promptValue === null) return;
 
@@ -1121,13 +1125,56 @@ function editLongTargetActual(longTargetEntry) {
     return;
   }
 
-  const updatedActual = clampInt(parsed, longTargetEntry.target, 7200);
-  longTargetEntry.actual = updatedActual;
+  const updatedActual = clampInt(parsed, entry.target, 7200);
+  const currentOutcomeLabel = entry.outcome === "success" ? "calm" : "stress";
+  const outcomeInput = window.prompt(
+    "Set outcome (`calm` or `stress`):",
+    currentOutcomeLabel
+  );
+  if (outcomeInput === null) return;
 
+  const updatedOutcome = parseOutcomeInput(outcomeInput);
+  if (!updatedOutcome) {
+    setStatus("Invalid outcome. Use `calm` or `stress`.");
+    return;
+  }
+
+  entry.actual = updatedActual;
+  entry.outcome = updatedOutcome;
+  entry.notes =
+    updatedOutcome === "success"
+      ? "Calm throughout planned duration."
+      : "Stress signs near/after planned duration.";
+
+  recalculateLongSuccessStreak();
   queueSaveState();
   renderHistory();
   renderStreak();
-  setStatus(`Long-target actual updated to ${formatSeconds(updatedActual)}.`);
+  setStatus(
+    `Long run updated: ${formatSeconds(updatedActual)} (${updatedOutcome === "success" ? "Calm" : "Stress"}).`
+  );
+}
+
+function parseOutcomeInput(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "calm" || normalized === "success") return "success";
+  if (normalized === "stress" || normalized === "struggle") return "struggle";
+  return null;
+}
+
+function recalculateLongSuccessStreak() {
+  let streak = 0;
+  for (const entry of state.history) {
+    if (!isLongTargetPhase(entry.phase)) continue;
+    if (entry.outcome === "success") {
+      streak += 1;
+      continue;
+    }
+    break;
+  }
+  state.longSuccessStreak = streak;
 }
 
 function pickNewerState(cloudState, localState) {

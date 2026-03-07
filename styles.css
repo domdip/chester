@@ -389,6 +389,10 @@ td {
 }
 
 .warmup-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   color: #2a3944;
   font-size: 0.9rem;
 }
