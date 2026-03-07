@@ -166,6 +166,9 @@ function bindEvents() {
   window.addEventListener("online", onNetworkOnline);
   window.addEventListener("resize", onViewportChanged);
   window.addEventListener("orientationchange", onViewportChanged);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onViewportChanged);
+  }
 }
 
 async function initializeCloud() {
@@ -380,11 +383,17 @@ function onViewportChanged() {
   if (viewportRefreshTimer) clearTimeout(viewportRefreshTimer);
   viewportRefreshTimer = setTimeout(() => {
     viewportRefreshTimer = null;
-    renderPlan();
-    renderHistory();
-    renderStreak();
-    if (calmTrendChart) calmTrendChart.resize();
-  }, 120);
+    // Force a clean chart reflow after orientation changes on mobile browsers.
+    if (calmTrendChart) {
+      calmTrendChart.destroy();
+      calmTrendChart = null;
+    }
+    requestAnimationFrame(() => {
+      renderPlan();
+      renderHistory();
+      renderStreak();
+    });
+  }, 220);
 }
 
 function makeDefaultState() {
@@ -974,6 +983,14 @@ function renderHistory() {
         editBtn.addEventListener("click", () => editCompletedLongRun(longTargetEntry));
         actionsCell.appendChild(editBtn);
       }
+      if (canEditLongOutcome(longTargetEntry)) {
+        const editOutcomeBtn = document.createElement("button");
+        editOutcomeBtn.type = "button";
+        editOutcomeBtn.className = "btn ghost small";
+        editOutcomeBtn.textContent = "Edit Outcome";
+        editOutcomeBtn.addEventListener("click", () => editLongRunOutcome(longTargetEntry));
+        actionsCell.appendChild(editOutcomeBtn);
+      }
     }
 
     const warmupToggleBtn = row.querySelector(".warmup-toggle");
@@ -1126,6 +1143,14 @@ function canEditCompletedLongEntry(entry) {
   );
 }
 
+function canEditLongOutcome(entry) {
+  return (
+    !!entry &&
+    isLongTargetPhase(entry.phase) &&
+    (entry.outcome === "success" || entry.outcome === "struggle")
+  );
+}
+
 function deleteSessionGroup(group) {
   if (!group || !Number.isFinite(group.startIndex) || !Number.isFinite(group.count) || group.count < 1) return;
   const label = group.entries[0]?.date
@@ -1185,6 +1210,46 @@ function editCompletedLongRun(entry) {
   setStatus(
     `Long run updated: ${formatSeconds(updatedActual)} (${updatedOutcome === "success" ? "Calm" : "Stress"}).`
   );
+}
+
+function editLongRunOutcome(entry) {
+  if (!canEditLongOutcome(entry)) return;
+
+  const currentOutcomeLabel =
+    entry.outcome === "success" ? "calm" : entry.outcome === "struggle" ? "stress" : "aborted";
+  const outcomeInput = window.prompt(
+    "Set long-run outcome (`calm` or `stress`):",
+    currentOutcomeLabel
+  );
+  if (outcomeInput === null) return;
+
+  const updatedOutcome = parseLongOutcomeInput(outcomeInput);
+  if (!updatedOutcome) {
+    setStatus("Invalid outcome. Use `calm` or `stress`.");
+    return;
+  }
+
+  entry.outcome = updatedOutcome;
+  if (updatedOutcome === "success") {
+    entry.notes = "Calm throughout planned duration.";
+  } else {
+    entry.notes = "Stress signs near/after planned duration.";
+  }
+
+  recalculateLongSuccessStreak();
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus(`Long-run outcome updated to ${updatedOutcome === "success" ? "Calm" : updatedOutcome}.`);
+}
+
+function parseLongOutcomeInput(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "calm" || normalized === "success") return "success";
+  if (normalized === "stress" || normalized === "struggle") return "struggle";
+  return null;
 }
 
 function recalculateLongSuccessStreak() {
