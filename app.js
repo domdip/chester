@@ -11,7 +11,6 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.7.3/firebase-auth.js";
 import { doc, getDoc, getFirestore, setDoc } from "https://www.gstatic.com/firebasejs/11.7.3/firebase-firestore.js";
 import { Chart, registerables } from "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/+esm";
-import "https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/+esm";
 
 const DEFAULT_WARMUP_COUNT = 4;
 const LONG_TARGET_THRESHOLD_SECONDS = 300;
@@ -918,15 +917,20 @@ function renderCalmTrend() {
   }
 
   calmTrendEl.hidden = false;
-  const dataset = points.map((point) => ({
-    x: new Date(point.date),
-    y: point.target,
-  }));
+  const labels = points.map((point) =>
+    new Date(point.date).toLocaleDateString(undefined, { month: "short", year: "numeric" })
+  );
+  const dataset = points.map((point) => point.target);
+  const fullDates = points.map((point) =>
+    new Date(point.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+  );
   const ctx = calmTrendChartEl.getContext("2d");
   if (!ctx) return;
 
   if (calmTrendChart) {
+    calmTrendChart.data.labels = labels;
     calmTrendChart.data.datasets[0].data = dataset;
+    calmTrendChart.data.datasets[0].fullDates = fullDates;
     calmTrendChart.update();
     return;
   }
@@ -934,10 +938,12 @@ function renderCalmTrend() {
   calmTrendChart = new Chart(ctx, {
     type: "line",
     data: {
+      labels,
       datasets: [
         {
           label: "Successful calm target",
           data: dataset,
+          fullDates,
           tension: 0.28,
           borderColor: "#a85f28",
           backgroundColor: "#a85f28",
@@ -956,26 +962,17 @@ function renderCalmTrend() {
           callbacks: {
             title(items) {
               if (!items.length) return "";
-              return new Date(items[0].parsed.x).toLocaleDateString(undefined, {
-                month: "short",
-                day: "numeric",
-                year: "numeric",
-              });
+              const item = items[0];
+              return item.dataset.fullDates?.[item.dataIndex] || "";
             },
             label(context) {
-              return `Target: ${formatSeconds(context.parsed.y)}`;
+              return `Target: ${formatSeconds(Number(context.parsed.y))}`;
             },
           },
         },
       },
       scales: {
         x: {
-          type: "time",
-          time: {
-            unit: "month",
-            displayFormats: { month: "MMM yyyy" },
-            tooltipFormat: "MMM d, yyyy",
-          },
           ticks: { color: "#6f7d87" },
           grid: { color: "#e3d7c7" },
         },
