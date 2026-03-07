@@ -410,7 +410,30 @@ td {
 .history-actions {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.history-actions .btn {
+  white-space: nowrap;
+  line-height: 1.1;
+}
+
+@media (min-width: 701px) {
+  .history th:nth-child(6),
+  .history td.notes {
+    min-width: 220px;
+  }
+
+  .history th:nth-child(7),
+  .history td.actions {
+    min-width: 150px;
+  }
+
+  .history td.actions .btn {
+    padding: 6px 8px;
+    font-size: 0.78rem;
+  }
 }
 
 .deploy-meta {

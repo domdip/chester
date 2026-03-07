@@ -995,7 +995,7 @@ function renderHistory() {
         const editOutcomeBtn = document.createElement("button");
         editOutcomeBtn.type = "button";
         editOutcomeBtn.className = "btn ghost small";
-        editOutcomeBtn.textContent = "Edit Outcome";
+        editOutcomeBtn.textContent = "Outcome";
         editOutcomeBtn.addEventListener("click", () => editLongRunOutcome(longTargetEntry));
         actionsCell.appendChild(editOutcomeBtn);
       }
