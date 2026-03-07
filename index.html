@@ -160,15 +160,15 @@
 
     <template id="row-template">
       <tr class="history-session-row">
-        <td class="date"></td>
-        <td class="target"></td>
-        <td class="actual"></td>
-        <td class="outcome"></td>
-        <td class="warmups">
+        <td class="date" data-label="Date"></td>
+        <td class="target" data-label="Long Target"></td>
+        <td class="actual" data-label="Actual"></td>
+        <td class="outcome" data-label="Outcome"></td>
+        <td class="warmups" data-label="Warmups">
           <button class="btn ghost small warmup-toggle" type="button" aria-expanded="false"></button>
         </td>
-        <td class="notes"></td>
-        <td class="actions"></td>
+        <td class="notes" data-label="Notes"></td>
+        <td class="actions" data-label="Actions"></td>
       </tr>
       <tr class="history-warmups-row" hidden>
         <td colspan="7">
