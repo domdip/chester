@@ -790,7 +790,16 @@ function renderStreak() {
       longestCalmTarget === null ? "--:--" : formatSeconds(longestCalmTarget)
     }`;
   }
-  renderCalmTrend();
+  try {
+    renderCalmTrend();
+  } catch (error) {
+    console.error(error);
+    if (calmTrendEl) calmTrendEl.hidden = true;
+    if (calmTrendChart) {
+      calmTrendChart.destroy();
+      calmTrendChart = null;
+    }
+  }
 }
 
 function renderDeployStamp() {
@@ -973,6 +982,7 @@ function renderCalmTrend() {
       },
       scales: {
         x: {
+          type: "category",
           ticks: { color: "#6f7d87" },
           grid: { color: "#e3d7c7" },
         },
