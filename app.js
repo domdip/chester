@@ -44,6 +44,7 @@ let stateDocRef = null;
 let currentUid = null;
 let saveChain = Promise.resolve();
 let cloudRetryTimer = null;
+let viewportRefreshTimer = null;
 let pendingCloudChanges = 0;
 let auth = null;
 let db = null;
@@ -148,6 +149,8 @@ function bindEvents() {
   struggleBtn.addEventListener("click", () => onRecordOutcome("struggle"));
   resetBtn.addEventListener("click", onResetAll);
   window.addEventListener("online", onNetworkOnline);
+  window.addEventListener("resize", onViewportChanged);
+  window.addEventListener("orientationchange", onViewportChanged);
 }
 
 async function initializeCloud() {
@@ -356,6 +359,17 @@ function scheduleCloudRetry(delayMs = 8000) {
 function onNetworkOnline() {
   if (!stateDocRef) return;
   queueSaveState({ isRetry: true });
+}
+
+function onViewportChanged() {
+  if (viewportRefreshTimer) clearTimeout(viewportRefreshTimer);
+  viewportRefreshTimer = setTimeout(() => {
+    viewportRefreshTimer = null;
+    renderPlan();
+    renderHistory();
+    renderStreak();
+    if (calmTrendChart) calmTrendChart.resize();
+  }, 120);
 }
 
 function makeDefaultState() {
@@ -798,9 +812,9 @@ function renderPlan() {
       successBtn.disabled = false;
       struggleBtn.disabled = false;
     } else {
-      startBtn.disabled = startDurationInput.disabled;
+      startBtn.disabled = !isUiEnabled();
       stopBtn.disabled = true;
-      abortSessionBtn.disabled = startDurationInput.disabled;
+      abortSessionBtn.disabled = !isUiEnabled();
       successBtn.disabled = true;
       struggleBtn.disabled = true;
     }
@@ -824,10 +838,10 @@ function renderPlan() {
   newLadderBtn.textContent = "Start New Session";
   nextLongTargetInput.value = String(clampInt(state.nextLongTarget, 3, 7200));
   nextWarmupCountInput.value = String(getSuggestedWarmupCount());
-  nextLongTargetInput.disabled = startDurationInput.disabled;
-  nextWarmupCountInput.disabled = startDurationInput.disabled;
+  nextLongTargetInput.disabled = !isUiEnabled();
+  nextWarmupCountInput.disabled = !isUiEnabled();
 
-  newLadderBtn.disabled = startDurationInput.disabled;
+  newLadderBtn.disabled = !isUiEnabled();
 }
 
 function renderTimer(seconds) {
@@ -1315,6 +1329,10 @@ function setUiEnabled(enabled) {
   newLadderBtn.disabled = !enabled;
   successBtn.disabled = true;
   struggleBtn.disabled = true;
+}
+
+function isUiEnabled() {
+  return !!settingsSaveBtn && settingsSaveBtn.disabled === false;
 }
 
 function setAuthUi(isSignedIn, label) {
