@@ -175,6 +175,11 @@ select {
   flex-wrap: wrap;
 }
 
+.pill.sync-pending {
+  background: #fde8cf;
+  color: #7b4a19;
+}
+
 .target-block {
   margin-top: 14px;
   text-align: center;

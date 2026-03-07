@@ -43,6 +43,8 @@ let awaitingOutcome = false;
 let stateDocRef = null;
 let currentUid = null;
 let saveChain = Promise.resolve();
+let cloudRetryTimer = null;
+let pendingCloudChanges = 0;
 let auth = null;
 let db = null;
 let googleProvider = null;
@@ -85,6 +87,7 @@ const calmTrendChartEl = document.getElementById("calm-trend-chart");
 const planProgressPill = document.getElementById("plan-progress-pill");
 const resetBtn = document.getElementById("reset-btn");
 const cloudStatusEl = document.getElementById("cloud-status");
+const pendingSyncBadgeEl = document.getElementById("pending-sync-badge");
 const signInBtn = document.getElementById("sign-in-btn");
 const signOutBtn = document.getElementById("sign-out-btn");
 const userLabelEl = document.getElementById("user-label");
@@ -144,6 +147,7 @@ function bindEvents() {
   successBtn.addEventListener("click", () => onRecordOutcome("success"));
   struggleBtn.addEventListener("click", () => onRecordOutcome("struggle"));
   resetBtn.addEventListener("click", onResetAll);
+  window.addEventListener("online", onNetworkOnline);
 }
 
 async function initializeCloud() {
@@ -163,6 +167,12 @@ async function handleAuthStateChange(user) {
     state = makeDefaultState();
     currentUid = null;
     stateDocRef = null;
+    if (cloudRetryTimer) {
+      clearTimeout(cloudRetryTimer);
+      cloudRetryTimer = null;
+    }
+    pendingCloudChanges = 0;
+    renderPendingSyncBadge();
     renderSignedOutState();
     setCloudStatus("Signed out");
     setStatus("Sign in with Google to load your synced data.");
@@ -293,7 +303,8 @@ async function loadStateFromCloud() {
   return sanitizeState(snapshot.data());
 }
 
-function queueSaveState() {
+function queueSaveState(options = {}) {
+  const { isRetry = false } = options;
   const payload = {
     ...state,
     updatedAt: Date.now(),
@@ -301,19 +312,50 @@ function queueSaveState() {
   state.updatedAt = payload.updatedAt;
   persistLocalBackupState(currentUid, payload);
   if (!stateDocRef) return;
+  if (!isRetry) {
+    pendingCloudChanges += 1;
+    renderPendingSyncBadge();
+  }
   const firestorePayload = stripUndefinedDeep(payload);
 
   saveChain = saveChain
     .then(() => setDoc(stateDocRef, firestorePayload))
+    .then(() => {
+      if (cloudRetryTimer) {
+        clearTimeout(cloudRetryTimer);
+        cloudRetryTimer = null;
+      }
+      if (currentUid) {
+        setCloudStatus(`Cloud sync active (${currentUid.slice(0, 6)})`);
+      }
+      pendingCloudChanges = 0;
+      renderPendingSyncBadge();
+    })
     .catch((error) => {
       console.error(error);
-      setCloudStatus("Cloud save failed");
       if (isClientDataError(error)) {
+        setCloudStatus("Cloud save failed");
         setStatus(`Save failed due to invalid local data (${describeError(error)}).`);
         return;
       }
-      setStatus(`Save failed (${describeError(error)}). Check network and Firebase rules.`);
+      setCloudStatus("Saved locally, retrying cloud...");
+      setStatus(`Cloud save failed (${describeError(error)}). Saved locally; retrying automatically.`);
+      scheduleCloudRetry();
     });
+}
+
+function scheduleCloudRetry(delayMs = 8000) {
+  if (cloudRetryTimer) return;
+  cloudRetryTimer = setTimeout(() => {
+    cloudRetryTimer = null;
+    if (!stateDocRef) return;
+    queueSaveState({ isRetry: true });
+  }, delayMs);
+}
+
+function onNetworkOnline() {
+  if (!stateDocRef) return;
+  queueSaveState({ isRetry: true });
 }
 
 function makeDefaultState() {
@@ -1250,6 +1292,13 @@ function setCloudStatus(message) {
   if (cloudStatusEl) {
     cloudStatusEl.textContent = message;
   }
+}
+
+function renderPendingSyncBadge() {
+  if (!pendingSyncBadgeEl) return;
+  const count = Math.max(0, pendingCloudChanges);
+  pendingSyncBadgeEl.hidden = count === 0;
+  pendingSyncBadgeEl.textContent = `Pending cloud sync: ${count}`;
 }
 
 function setUiEnabled(enabled) {
