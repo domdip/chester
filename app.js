@@ -335,6 +335,10 @@ function sanitizeDayPlan(dayPlan) {
   if (sessions.length === 0) return null;
 
   return {
+    sessionId:
+      typeof dayPlan.sessionId === "string" && dayPlan.sessionId.trim()
+        ? dayPlan.sessionId
+        : createSessionId(),
     dateKey: typeof dayPlan.dateKey === "string" ? dayPlan.dateKey : todayKey(),
     targetDuration: clampInt(dayPlan.targetDuration, 3, 7200),
     warmupCount: warmupCountFromState,
@@ -526,6 +530,7 @@ function onRecordOutcome(outcome) {
   const entry = {
     date: new Date().toISOString(),
     day: state.dayPlan.dateKey,
+    sessionId: state.dayPlan.sessionId || createSessionId(),
     phase: isLongTarget ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
     target: session.duration,
     actual,
@@ -608,6 +613,7 @@ function regenerateDayPlan(warmupCount = DEFAULT_WARMUP_COUNT) {
   const targetDuration = clampInt(state.nextLongTarget, 3, 7200);
   const safeWarmupCount = clampInt(warmupCount, 1, 20);
   state.dayPlan = {
+    sessionId: createSessionId(),
     dateKey: todayKey(),
     targetDuration,
     warmupCount: safeWarmupCount,
@@ -732,21 +738,120 @@ function renderStreak() {
 function renderHistory() {
   historyBody.innerHTML = "";
 
-  state.history.slice(0, 100).forEach((entry) => {
+  const sessionGroups = buildSessionGroups(state.history).slice(0, 100);
+  sessionGroups.forEach((group) => {
+    const latestEntry = group.entries[0];
+    const longTargetEntry = group.entries.find((entry) => isLongTargetPhase(entry.phase));
+    const warmups = group.entries
+      .filter((entry) => parseWarmupIndex(entry.phase) !== null)
+      .sort((a, b) => parseWarmupIndex(a.phase) - parseWarmupIndex(b.phase));
+
     const row = rowTemplate.content.cloneNode(true);
-    row.querySelector(".date").textContent = new Date(entry.date).toLocaleString();
-    row.querySelector(".phase").textContent = entry.phase;
-    row.querySelector(".target").textContent = formatSeconds(entry.target);
-    row.querySelector(".actual").textContent = formatSeconds(entry.actual);
+    row.querySelector(".date").textContent = new Date(latestEntry.date).toLocaleString();
+    row.querySelector(".target").textContent = longTargetEntry ? formatSeconds(longTargetEntry.target) : "-";
+    row.querySelector(".actual").textContent = longTargetEntry ? formatSeconds(longTargetEntry.actual) : "-";
 
     const outcomeCell = row.querySelector(".outcome");
-    outcomeCell.textContent = entry.outcome === "success" ? "Calm" : "Stress";
-    outcomeCell.className = `outcome ${entry.outcome}`;
+    let outcomeText = "In progress";
+    let outcomeClass = "neutral";
 
-    row.querySelector(".notes").textContent = entry.notes;
+    if (longTargetEntry) {
+      outcomeText = longTargetEntry.outcome === "success" ? "Calm" : "Stress";
+      outcomeClass = longTargetEntry.outcome;
+    } else if (latestEntry.outcome === "struggle") {
+      outcomeText = "Stress";
+      outcomeClass = "struggle";
+    }
+    outcomeCell.textContent = outcomeText;
+    outcomeCell.className = `outcome ${outcomeClass}`;
+
+    row.querySelector(".notes").textContent = longTargetEntry ? longTargetEntry.notes : latestEntry.notes;
+
+    const warmupToggleBtn = row.querySelector(".warmup-toggle");
+    const warmupRow = row.querySelector(".history-warmups-row");
+    const warmupList = row.querySelector(".warmup-list");
+
+    if (warmups.length === 0) {
+      warmupToggleBtn.textContent = "No warmups";
+      warmupToggleBtn.disabled = true;
+    } else {
+      warmupToggleBtn.textContent = `Show warmups (${warmups.length})`;
+      warmups.forEach((warmupEntry) => {
+        const warmupOutcome = warmupEntry.outcome === "success" ? "Calm" : "Stress";
+        const warmupIndex = parseWarmupIndex(warmupEntry.phase) || 0;
+        const item = document.createElement("li");
+        item.textContent = `Warmup ${warmupIndex}: ${formatSeconds(warmupEntry.actual)} / ${formatSeconds(
+          warmupEntry.target
+        )} (${warmupOutcome})`;
+        warmupList.appendChild(item);
+      });
+
+      warmupToggleBtn.addEventListener("click", () => {
+        const isExpanded = warmupToggleBtn.getAttribute("aria-expanded") === "true";
+        warmupToggleBtn.setAttribute("aria-expanded", isExpanded ? "false" : "true");
+        warmupToggleBtn.textContent = isExpanded
+          ? `Show warmups (${warmups.length})`
+          : `Hide warmups (${warmups.length})`;
+        warmupRow.hidden = isExpanded;
+      });
+    }
 
     historyBody.appendChild(row);
   });
+}
+
+function buildSessionGroups(history) {
+  if (!Array.isArray(history) || history.length === 0) return [];
+
+  const groups = [];
+  let index = 0;
+
+  while (index < history.length) {
+    const startEntry = history[index];
+    if (!startEntry || typeof startEntry !== "object") {
+      index += 1;
+      continue;
+    }
+
+    if (startEntry.sessionId) {
+      const entries = [startEntry];
+      index += 1;
+      while (index < history.length && history[index]?.sessionId === startEntry.sessionId) {
+        entries.push(history[index]);
+        index += 1;
+      }
+      groups.push({ entries });
+      continue;
+    }
+
+    const entries = [startEntry];
+    const startDay = startEntry.day || isoDayFromDate(startEntry.date);
+    let warmupCursor = parseWarmupIndex(startEntry.phase);
+
+    index += 1;
+    while (index < history.length) {
+      const candidate = history[index];
+      if (!candidate || typeof candidate !== "object") break;
+      if (candidate.sessionId) break;
+
+      const candidateDay = candidate.day || isoDayFromDate(candidate.date);
+      if (candidateDay !== startDay) break;
+
+      const candidateWarmup = parseWarmupIndex(candidate.phase);
+      if (candidateWarmup === null) break;
+      if (warmupCursor !== null && candidateWarmup >= warmupCursor) break;
+
+      entries.push(candidate);
+      warmupCursor = candidateWarmup;
+      index += 1;
+
+      if (candidateWarmup === 1) break;
+    }
+
+    groups.push({ entries });
+  }
+
+  return groups;
 }
 
 function setStatus(message) {
@@ -802,6 +907,28 @@ function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+function createSessionId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isoDayFromDate(isoDate) {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function isLongTargetPhase(phase) {
+  return /^Long target/i.test(String(phase || ""));
+}
+
+function parseWarmupIndex(phase) {
+  const match = /^Warmup\s+(\d+)/i.exec(String(phase || ""));
+  return match ? clampInt(match[1], 1, 20) : null;
+}
+
 function todayKey() {
   const now = new Date();
   const year = now.getFullYear();
@@ -835,11 +962,8 @@ function getSuggestedWarmupCount() {
   let maxWarmup = 0;
   for (const entry of state.history) {
     if (entry.day !== latestDay) break;
-    const match = /^Warmup\\s+(\\d+)/i.exec(entry.phase || "");
-    if (match) {
-      const n = clampInt(match[1], 1, 20);
-      maxWarmup = Math.max(maxWarmup, n);
-    }
+    const warmupIndex = parseWarmupIndex(entry.phase);
+    if (warmupIndex !== null) maxWarmup = Math.max(maxWarmup, warmupIndex);
   }
 
   return maxWarmup > 0 ? maxWarmup : DEFAULT_WARMUP_COUNT;

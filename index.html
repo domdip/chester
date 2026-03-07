@@ -132,10 +132,10 @@
             <thead>
               <tr>
                 <th>Date</th>
-                <th>Phase</th>
-                <th>Target</th>
+                <th>Long Target</th>
                 <th>Actual</th>
                 <th>Outcome</th>
+                <th>Warmups</th>
                 <th>Notes</th>
               </tr>
             </thead>
@@ -146,13 +146,20 @@
     </main>
 
     <template id="row-template">
-      <tr>
+      <tr class="history-session-row">
         <td class="date"></td>
-        <td class="phase"></td>
         <td class="target"></td>
         <td class="actual"></td>
         <td class="outcome"></td>
+        <td class="warmups">
+          <button class="btn ghost small warmup-toggle" type="button" aria-expanded="false"></button>
+        </td>
         <td class="notes"></td>
+      </tr>
+      <tr class="history-warmups-row" hidden>
+        <td colspan="6">
+          <ul class="warmup-list"></ul>
+        </td>
       </tr>
     </template>
 

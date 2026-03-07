@@ -310,7 +310,7 @@ select {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 560px;
+  min-width: 680px;
 }
 
 th,
@@ -329,6 +329,37 @@ td {
 .outcome.struggle {
   color: var(--alert);
   font-weight: 700;
+}
+
+.outcome.neutral {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.history-session-row .warmups {
+  white-space: nowrap;
+}
+
+.warmup-toggle {
+  min-width: 132px;
+}
+
+.history-warmups-row td {
+  background: #f7f0e5;
+  border-bottom: 1px solid #ddd0bd;
+  padding: 0;
+}
+
+.warmup-list {
+  margin: 0;
+  padding: 10px 16px 10px 28px;
+  display: grid;
+  gap: 6px;
+}
+
+.warmup-list li {
+  color: #2a3944;
+  font-size: 0.9rem;
 }
 
 @media (max-width: 700px) {
