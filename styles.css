@@ -28,10 +28,12 @@ body {
     radial-gradient(circle at 85% 20%, #ffd6c6 0%, transparent 30%),
     var(--bg);
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 .app-shell {
   max-width: 980px;
+  width: 100%;
   margin: 0 auto;
   padding: 28px 16px 60px;
   display: grid;
@@ -82,6 +84,9 @@ h1 {
 #user-label {
   font-size: 0.9rem;
   color: #e8ecf0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .panel {
