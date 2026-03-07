@@ -60,6 +60,7 @@ let currentUid = null;
 let saveChain = Promise.resolve();
 let cloudRetryTimer = null;
 let viewportRefreshTimer = null;
+let viewportSettleTimer = null;
 let pendingCloudChanges = 0;
 let auth = null;
 let db = null;
@@ -381,6 +382,7 @@ function onNetworkOnline() {
 
 function onViewportChanged() {
   if (viewportRefreshTimer) clearTimeout(viewportRefreshTimer);
+  if (viewportSettleTimer) clearTimeout(viewportSettleTimer);
   viewportRefreshTimer = setTimeout(() => {
     viewportRefreshTimer = null;
     // Force a clean chart reflow after orientation changes on mobile browsers.
@@ -388,11 +390,17 @@ function onViewportChanged() {
       calmTrendChart.destroy();
       calmTrendChart = null;
     }
-    requestAnimationFrame(() => {
+    const rerender = () => {
       renderPlan();
       renderHistory();
       renderStreak();
-    });
+    };
+    requestAnimationFrame(rerender);
+    // Some mobile browsers settle viewport metrics late after rotation.
+    viewportSettleTimer = setTimeout(() => {
+      viewportSettleTimer = null;
+      rerender();
+    }, 380);
   }, 220);
 }
 
@@ -1144,11 +1152,7 @@ function canEditCompletedLongEntry(entry) {
 }
 
 function canEditLongOutcome(entry) {
-  return (
-    !!entry &&
-    isLongTargetPhase(entry.phase) &&
-    (entry.outcome === "success" || entry.outcome === "struggle")
-  );
+  return !!entry && isLongTargetPhase(entry.phase);
 }
 
 function deleteSessionGroup(group) {
@@ -1215,8 +1219,7 @@ function editCompletedLongRun(entry) {
 function editLongRunOutcome(entry) {
   if (!canEditLongOutcome(entry)) return;
 
-  const currentOutcomeLabel =
-    entry.outcome === "success" ? "calm" : entry.outcome === "struggle" ? "stress" : "aborted";
+  const currentOutcomeLabel = entry.outcome === "success" ? "calm" : "stress";
   const outcomeInput = window.prompt(
     "Set long-run outcome (`calm` or `stress`):",
     currentOutcomeLabel
