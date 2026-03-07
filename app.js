@@ -882,7 +882,7 @@ function renderHistory() {
         const editBtn = document.createElement("button");
         editBtn.type = "button";
         editBtn.className = "btn ghost small";
-        editBtn.textContent = "Edit Long Run";
+        editBtn.textContent = "Edit";
         editBtn.addEventListener("click", () => editCompletedLongRun(longTargetEntry));
         actionsCell.appendChild(editBtn);
       }
@@ -901,7 +901,7 @@ function renderHistory() {
       warmupToggleBtn.textContent = "No warmups";
       warmupToggleBtn.disabled = true;
     } else {
-      warmupToggleBtn.textContent = `Show warmups (${warmups.length})`;
+      warmupToggleBtn.textContent = `Warmups (${warmups.length})`;
       warmups.forEach((warmupEntry) => {
         const warmupOutcome =
           warmupEntry.outcome === "success"
@@ -924,8 +924,8 @@ function renderHistory() {
         const isExpanded = warmupToggleBtn.getAttribute("aria-expanded") === "true";
         warmupToggleBtn.setAttribute("aria-expanded", isExpanded ? "false" : "true");
         warmupToggleBtn.textContent = isExpanded
-          ? `Show warmups (${warmups.length})`
-          : `Hide warmups (${warmups.length})`;
+          ? `Warmups (${warmups.length})`
+          : "Hide warmups";
         warmupRow.hidden = isExpanded;
       });
     }
