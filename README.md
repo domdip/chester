@@ -4,8 +4,8 @@ A static web app for running daily separation training ladders inspired by Julie
 
 ## What It Does
 
-- Builds a daily plan with 5 sessions:
-  - 4 random warmups (much shorter than the long target)
+- Builds a daily plan with a configurable number of sessions:
+  - Random warmups (much shorter than the long target)
   - 1 long target session
 - Runs a timer and logs each session as calm success or stress signal
 - If the long target is successful, the next day's long target increases by your configured percentage
@@ -56,5 +56,5 @@ Deploy as a static site to GitHub Pages, Cloudflare Pages, or Netlify.
 
 - You can run more than one ladder per day.
 - After completing a ladder, the app shows a completion message and a `Start New Session` button.
-- Use `Start New Session` to generate a fresh set of 4 warmups + 1 long target.
+- Use `Start New Session` to generate a fresh set of warmups + 1 long target.
 - The new ladder uses your current `nextLongTarget` (including any changes from previous long-session outcomes).
