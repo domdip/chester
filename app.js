@@ -20,7 +20,6 @@ import {
   isoDayFromDate,
   isLongTargetPhase,
   normalizeFailureMode,
-  parseOutcomeInput,
   parseWarmupIndex,
   randomInt,
   resolvePreferredState,
@@ -94,6 +93,7 @@ const abortSessionBtn = document.getElementById("abort-session-btn");
 const newLadderBtn = document.getElementById("new-ladder-btn");
 const successBtn = document.getElementById("success-btn");
 const struggleBtn = document.getElementById("struggle-btn");
+const middleBtn = document.getElementById("middle-btn");
 const statusMessage = document.getElementById("status-message");
 const historyBody = document.getElementById("history-body");
 const rowTemplate = document.getElementById("row-template");
@@ -163,6 +163,7 @@ function bindEvents() {
   newLadderBtn.addEventListener("click", onNewLadderToday);
   successBtn.addEventListener("click", () => onRecordOutcome("success"));
   struggleBtn.addEventListener("click", () => onRecordOutcome("struggle"));
+  middleBtn.addEventListener("click", () => onRecordOutcome("middle"));
   resetBtn.addEventListener("click", onResetAll);
   window.addEventListener("online", onNetworkOnline);
   window.addEventListener("resize", onViewportChanged);
@@ -480,7 +481,9 @@ function sanitizeDayPlan(dayPlan) {
     sessions,
     currentIndex: clampInt(dayPlan.currentIndex, 0, sessions.length),
     targetOutcome:
-      dayPlan.targetOutcome === "success" || dayPlan.targetOutcome === "struggle"
+      dayPlan.targetOutcome === "success" ||
+      dayPlan.targetOutcome === "struggle" ||
+      dayPlan.targetOutcome === "middle"
         ? dayPlan.targetOutcome
         : null,
   };
@@ -568,6 +571,8 @@ function onStartSession() {
   stopBtn.disabled = false;
   successBtn.disabled = true;
   struggleBtn.disabled = true;
+  middleBtn.disabled = true;
+  middleBtn.hidden = session.kind !== "long-target";
 
   timerInterval = setInterval(() => {
     elapsed = Math.floor((Date.now() - startedAt) / 1000);
@@ -580,8 +585,14 @@ function onStartSession() {
       stopBtn.disabled = true;
       successBtn.disabled = false;
       struggleBtn.disabled = false;
+      middleBtn.disabled = session.kind !== "long-target";
+      middleBtn.hidden = session.kind !== "long-target";
       renderPlan();
-      setStatus("Step duration reached. Record calm or stress.");
+      setStatus(
+        session.kind === "long-target"
+          ? "Step duration reached. Record thumbs down, middle, or thumbs up."
+          : "Step duration reached. Record calm or stress."
+      );
     }
   }, 250);
 }
@@ -595,8 +606,14 @@ function onStopEarly() {
   stopBtn.disabled = true;
   successBtn.disabled = false;
   struggleBtn.disabled = false;
+  middleBtn.disabled = session.kind !== "long-target";
+  middleBtn.hidden = session.kind !== "long-target";
   renderPlan();
-  setStatus("Step stopped early. Record the observed outcome.");
+  setStatus(
+    session.kind === "long-target"
+      ? "Step stopped early. Record thumbs down, middle, or thumbs up."
+      : "Step stopped early. Record the observed outcome."
+  );
 }
 
 function onNewLadderToday() {
@@ -666,15 +683,9 @@ function onRecordOutcome(outcome) {
   const actual = elapsed;
   const completed = actual >= session.duration;
   const isLongTarget = session.kind === "long-target";
-
-  const notes =
-    outcome === "success"
-      ? completed
-        ? "Calm throughout planned duration."
-        : "Calm during shortened run."
-      : completed
-      ? "Stress signs near/after planned duration."
-      : "Stress signs before planned duration.";
+  const normalizedLongOutcome = normalizeLongOutcome(outcome);
+  const appliedOutcome = isLongTarget ? normalizedLongOutcome : outcome;
+  const notes = getOutcomeNotes({ isLongTarget, outcome: appliedOutcome, completed });
 
   const entry = {
     date: new Date().toISOString(),
@@ -683,13 +694,13 @@ function onRecordOutcome(outcome) {
     phase: isLongTarget ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
     target: session.duration,
     actual,
-    outcome,
+    outcome: appliedOutcome,
     notes,
   };
 
   state.history.unshift(entry);
 
-  if (outcome === "success") {
+  if (appliedOutcome === "success") {
     state.dayPlan.currentIndex += 1;
 
     if (isLongTarget) {
@@ -698,11 +709,19 @@ function onRecordOutcome(outcome) {
       state.longSuccessStreak += 1;
       state.dayPlan.targetOutcome = "success";
       setStatus(
-        `Long target succeeded. Next long target set to ${formatSeconds(state.nextLongTarget)}.`
+        `Long target logged as thumbs up. Next long target set to ${formatSeconds(state.nextLongTarget)}.`
       );
     } else {
       setStatus("Warmup success logged. Move to the next warmup.");
     }
+  } else if (isLongTarget && appliedOutcome === "middle") {
+    state.longSuccessStreak = 0;
+    state.dayPlan.targetOutcome = "middle";
+    state.dayPlan.currentIndex = state.dayPlan.sessions.length;
+    state.nextLongTarget = session.duration;
+    setStatus(
+      `Long target logged as middle. Next long target kept at ${formatSeconds(state.nextLongTarget)}.`
+    );
   } else {
     if (isLongTarget) {
       state.longSuccessStreak = 0;
@@ -726,6 +745,7 @@ function onRecordOutcome(outcome) {
   startBtn.disabled = !getCurrentSession();
   successBtn.disabled = true;
   struggleBtn.disabled = true;
+  middleBtn.disabled = true;
   elapsed = 0;
   renderTimer(0);
 }
@@ -830,6 +850,15 @@ function renderPlan() {
     sessionControlsEl.hidden = false;
     resultActionsEl.hidden = false;
     completionPanelEl.hidden = true;
+    if (session.kind === "long-target") {
+      successBtn.textContent = "Mark Thumbs Up";
+      struggleBtn.textContent = "Mark Thumbs Down";
+      middleBtn.hidden = false;
+    } else {
+      successBtn.textContent = "Mark Calm Success";
+      struggleBtn.textContent = "Mark Stress Signal";
+      middleBtn.hidden = true;
+    }
 
     if (running) {
       startBtn.disabled = true;
@@ -837,18 +866,21 @@ function renderPlan() {
       abortSessionBtn.disabled = false;
       successBtn.disabled = true;
       struggleBtn.disabled = true;
+      middleBtn.disabled = true;
     } else if (awaitingOutcome) {
       startBtn.disabled = true;
       stopBtn.disabled = true;
       abortSessionBtn.disabled = false;
       successBtn.disabled = false;
       struggleBtn.disabled = false;
+      middleBtn.disabled = session.kind !== "long-target";
     } else {
       startBtn.disabled = !isUiEnabled();
       stopBtn.disabled = true;
       abortSessionBtn.disabled = !isUiEnabled();
       successBtn.disabled = true;
       struggleBtn.disabled = true;
+      middleBtn.disabled = true;
     }
     return;
   }
@@ -858,6 +890,7 @@ function renderPlan() {
   sessionControlsEl.hidden = true;
   resultActionsEl.hidden = true;
   completionPanelEl.hidden = false;
+  middleBtn.hidden = true;
 
   const lastSession = state.history[0];
   if (lastSession && isTodayIso(lastSession.date)) {
@@ -945,13 +978,16 @@ function renderHistory() {
 
     if (longTargetEntry) {
       if (longTargetEntry.outcome === "success") {
-        outcomeText = "Calm";
+        outcomeText = "Thumbs up";
         outcomeClass = "success";
+      } else if (longTargetEntry.outcome === "middle") {
+        outcomeText = "Middle";
+        outcomeClass = "neutral";
       } else if (longTargetEntry.outcome === "aborted") {
         outcomeText = "Aborted";
         outcomeClass = "aborted";
       } else {
-        outcomeText = "Stress";
+        outcomeText = "Thumbs down";
         outcomeClass = "struggle";
       }
     } else if (latestEntry.outcome === "struggle") {
@@ -1145,7 +1181,7 @@ function canEditCompletedLongEntry(entry) {
   return (
     !!entry &&
     isLongTargetPhase(entry.phase) &&
-    (entry.outcome === "success" || entry.outcome === "struggle") &&
+    (entry.outcome === "success" || entry.outcome === "struggle" || entry.outcome === "middle") &&
     Number.isFinite(entry.target) &&
     Number.isFinite(entry.actual)
   );
@@ -1187,72 +1223,115 @@ function editCompletedLongRun(entry) {
   }
 
   const updatedActual = clampInt(parsed, 0, 7200);
-  const currentOutcomeLabel = entry.outcome === "success" ? "calm" : "stress";
+  const currentOutcomeLabel = getLongOutcomePromptLabel(entry.outcome);
   const outcomeInput = window.prompt(
-    "Set outcome (`calm` or `stress`):",
-    currentOutcomeLabel
-  );
-  if (outcomeInput === null) return;
-
-  const updatedOutcome = parseOutcomeInput(outcomeInput);
-  if (!updatedOutcome) {
-    setStatus("Invalid outcome. Use `calm` or `stress`.");
-    return;
-  }
-
-  entry.actual = updatedActual;
-  entry.outcome = updatedOutcome;
-  entry.notes =
-    updatedOutcome === "success"
-      ? "Calm throughout planned duration."
-      : "Stress signs near/after planned duration.";
-
-  recalculateLongSuccessStreak();
-  queueSaveState();
-  renderHistory();
-  renderStreak();
-  setStatus(
-    `Long run updated: ${formatSeconds(updatedActual)} (${updatedOutcome === "success" ? "Calm" : "Stress"}).`
-  );
-}
-
-function editLongRunOutcome(entry) {
-  if (!canEditLongOutcome(entry)) return;
-
-  const currentOutcomeLabel = entry.outcome === "success" ? "calm" : "stress";
-  const outcomeInput = window.prompt(
-    "Set long-run outcome (`calm` or `stress`):",
+    "Set outcome (`thumbs up`, `middle`, or `thumbs down`):",
     currentOutcomeLabel
   );
   if (outcomeInput === null) return;
 
   const updatedOutcome = parseLongOutcomeInput(outcomeInput);
   if (!updatedOutcome) {
-    setStatus("Invalid outcome. Use `calm` or `stress`.");
+    setStatus("Invalid outcome. Use `thumbs up`, `middle`, or `thumbs down`.");
     return;
   }
 
+  entry.actual = updatedActual;
   entry.outcome = updatedOutcome;
-  if (updatedOutcome === "success") {
-    entry.notes = "Calm throughout planned duration.";
-  } else {
-    entry.notes = "Stress signs near/after planned duration.";
-  }
+  entry.notes = getOutcomeNotes({ isLongTarget: true, outcome: updatedOutcome, completed: true });
 
   recalculateLongSuccessStreak();
   queueSaveState();
   renderHistory();
   renderStreak();
-  setStatus(`Long-run outcome updated to ${updatedOutcome === "success" ? "Calm" : updatedOutcome}.`);
+  setStatus(
+    `Long run updated: ${formatSeconds(updatedActual)} (${formatLongOutcomeLabel(updatedOutcome)}).`
+  );
+}
+
+function editLongRunOutcome(entry) {
+  if (!canEditLongOutcome(entry)) return;
+
+  const currentOutcomeLabel = getLongOutcomePromptLabel(entry.outcome);
+  const outcomeInput = window.prompt(
+    "Set long-run outcome (`thumbs up`, `middle`, or `thumbs down`):",
+    currentOutcomeLabel
+  );
+  if (outcomeInput === null) return;
+
+  const updatedOutcome = parseLongOutcomeInput(outcomeInput);
+  if (!updatedOutcome) {
+    setStatus("Invalid outcome. Use `thumbs up`, `middle`, or `thumbs down`.");
+    return;
+  }
+
+  entry.outcome = updatedOutcome;
+  entry.notes = getOutcomeNotes({ isLongTarget: true, outcome: updatedOutcome, completed: true });
+
+  recalculateLongSuccessStreak();
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus(`Long-run outcome updated to ${formatLongOutcomeLabel(updatedOutcome)}.`);
 }
 
 function parseLongOutcomeInput(value) {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
-  if (normalized === "calm" || normalized === "success") return "success";
-  if (normalized === "stress" || normalized === "struggle") return "struggle";
+  if (
+    normalized === "thumbs up" ||
+    normalized === "thumbsup" ||
+    normalized === "up" ||
+    normalized === "calm" ||
+    normalized === "success"
+  ) {
+    return "success";
+  }
+  if (normalized === "middle" || normalized === "neutral" || normalized === "mid") return "middle";
+  if (
+    normalized === "thumbs down" ||
+    normalized === "thumbsdown" ||
+    normalized === "down" ||
+    normalized === "stress" ||
+    normalized === "struggle"
+  ) {
+    return "struggle";
+  }
   return null;
+}
+
+function normalizeLongOutcome(outcome) {
+  if (outcome === "middle") return "middle";
+  return outcome === "success" ? "success" : "struggle";
+}
+
+function getOutcomeNotes({ isLongTarget, outcome, completed }) {
+  if (isLongTarget && outcome === "middle") {
+    return completed
+      ? "Long target completed with neutral response (middle)."
+      : "Long target stopped early with neutral response (middle).";
+  }
+  if (outcome === "success") {
+    return completed
+      ? "Calm throughout planned duration."
+      : "Calm during shortened run.";
+  }
+  return completed
+    ? "Stress signs near/after planned duration."
+    : "Stress signs before planned duration.";
+}
+
+function getLongOutcomePromptLabel(outcome) {
+  if (outcome === "success") return "thumbs up";
+  if (outcome === "middle") return "middle";
+  return "thumbs down";
+}
+
+function formatLongOutcomeLabel(outcome) {
+  if (outcome === "success") return "Thumbs up";
+  if (outcome === "middle") return "Middle";
+  return "Thumbs down";
 }
 
 function recalculateLongSuccessStreak() {
@@ -1313,6 +1392,7 @@ function setUiEnabled(enabled) {
   newLadderBtn.disabled = !enabled;
   successBtn.disabled = true;
   struggleBtn.disabled = true;
+  middleBtn.disabled = true;
 }
 
 function isUiEnabled() {
@@ -1347,7 +1427,11 @@ function sanitizeHistoryEntry(entry) {
   const phase = typeof entry.phase === "string" && entry.phase.trim() ? entry.phase : "Long target";
   const notes = typeof entry.notes === "string" ? entry.notes : "";
   const outcome =
-    entry.outcome === "success" || entry.outcome === "aborted" ? entry.outcome : "struggle";
+    entry.outcome === "success" ||
+    entry.outcome === "middle" ||
+    entry.outcome === "aborted"
+      ? entry.outcome
+      : "struggle";
   const sanitized = {
     date,
     day,

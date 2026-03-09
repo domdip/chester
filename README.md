@@ -7,9 +7,11 @@ A static web app for running daily separation training ladders inspired by Julie
 - Builds a daily plan with a configurable number of sessions:
   - Random warmups (much shorter than the long target)
   - 1 long target session
-- Runs a timer and logs each session as calm success or stress signal
-- If the long target is successful, the next day's long target increases by your configured percentage
-- If the long target fails, behavior is configurable:
+- Runs a timer and logs outcomes for each step
+- Long-target outcomes use 3 choices: thumbs up, middle, thumbs down
+- If the long target is thumbs up, the next day's long target increases by your configured percentage
+- If the long target is middle, the next day's long target stays the same as the current long target
+- If the long target is thumbs down, behavior is configurable:
   - Reduce next target by a configured percentage
   - Retry the same target tomorrow
 - Syncs state with Firebase so your data is available on phone and desktop
