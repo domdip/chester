@@ -650,21 +650,24 @@ function onAbortTrainingSession() {
 
   clearInterval(timerInterval);
   const abortedActual = elapsed;
+  const shouldLogAbort = running || abortedActual > 0 || awaitingOutcome;
   running = false;
   awaitingOutcome = false;
   elapsed = 0;
   renderTimer(0);
 
-  state.history.unshift({
-    date: new Date().toISOString(),
-    day: state.dayPlan.dateKey,
-    sessionId: state.dayPlan.sessionId || createSessionId(),
-    phase: session.kind === "long-target" ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
-    target: session.duration,
-    actual: Math.max(0, abortedActual),
-    outcome: "aborted",
-    notes: "Session aborted by user.",
-  });
+  if (shouldLogAbort) {
+    state.history.unshift({
+      date: new Date().toISOString(),
+      day: state.dayPlan.dateKey,
+      sessionId: state.dayPlan.sessionId || createSessionId(),
+      phase: session.kind === "long-target" ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
+      target: session.duration,
+      actual: Math.max(0, abortedActual),
+      outcome: "aborted",
+      notes: "Session aborted by user.",
+    });
+  }
 
   state.dayPlan.currentIndex = state.dayPlan.sessions.length;
   state.dayPlan.targetOutcome = "aborted";
@@ -672,7 +675,11 @@ function onAbortTrainingSession() {
   queueSaveState();
   renderPlan();
   renderHistory();
-  setStatus("Training session aborted. Start a new session when ready.");
+  setStatus(
+    shouldLogAbort
+      ? "Training session aborted. Start a new session when ready."
+      : "Training session cancelled before it started. Start a new session when ready."
+  );
 }
 
 function onRecordOutcome(outcome) {
@@ -801,7 +808,7 @@ function buildSessions(targetDuration, warmupCount) {
     const minWarmup = isLongTarget ? 10 : 1;
     const maxWarmup = isLongTarget
       ? 59
-      : Math.max(minWarmup, Math.floor(targetDuration * 0.2));
+      : Math.max(minWarmup, Math.floor(targetDuration / 3));
     const rawDuration = randomInt(minWarmup, maxWarmup);
     const duration = Math.min(targetDuration - 1, rawDuration);
 
@@ -849,35 +856,32 @@ function renderPlan() {
     targetBlockEl.hidden = false;
     timerEl.hidden = false;
     sessionControlsEl.hidden = false;
-    abortControlsEl.hidden = false;
     resultActionsEl.hidden = false;
+    abortControlsEl.hidden = false;
     completionPanelEl.hidden = true;
     if (session.kind === "long-target") {
-      successBtn.textContent = "😊";
-      successBtn.setAttribute("aria-label", "Mark thumbs up");
-      successBtn.title = "Thumbs up";
       struggleBtn.textContent = "☹️";
       struggleBtn.setAttribute("aria-label", "Mark thumbs down");
       struggleBtn.title = "Thumbs down";
       middleBtn.textContent = "😐";
       middleBtn.setAttribute("aria-label", "Mark middle");
       middleBtn.title = "Middle";
+      successBtn.textContent = "😊";
+      successBtn.setAttribute("aria-label", "Mark thumbs up");
+      successBtn.title = "Thumbs up";
       successBtn.classList.add("emoji-btn");
       struggleBtn.classList.add("emoji-btn");
       middleBtn.classList.add("emoji-btn");
       middleBtn.hidden = false;
     } else {
-      successBtn.textContent = "Mark Calm Success";
-      struggleBtn.textContent = "Mark Stress Signal";
-      successBtn.setAttribute("aria-label", "Mark calm success");
-      successBtn.title = "";
+      struggleBtn.textContent = "☹️";
       struggleBtn.setAttribute("aria-label", "Mark stress signal");
-      struggleBtn.title = "";
-      middleBtn.textContent = "Mark Middle";
-      middleBtn.setAttribute("aria-label", "Mark middle");
-      middleBtn.title = "";
-      successBtn.classList.remove("emoji-btn");
-      struggleBtn.classList.remove("emoji-btn");
+      struggleBtn.title = "Stress signal";
+      successBtn.textContent = "😊";
+      successBtn.setAttribute("aria-label", "Mark calm success");
+      successBtn.title = "Calm success";
+      successBtn.classList.add("emoji-btn");
+      struggleBtn.classList.add("emoji-btn");
       middleBtn.classList.remove("emoji-btn");
       middleBtn.hidden = true;
     }
@@ -1120,9 +1124,7 @@ function renderCalmTrend() {
   }
 
   calmTrendEl.hidden = false;
-  const labels = points.map((point) =>
-    new Date(point.date).toLocaleDateString(undefined, { month: "short", year: "numeric" })
-  );
+  const labels = points.map((point, index) => formatTrendAxisLabel(point.date, points[index - 1]?.date));
   const dataset = points.map((point) => point.target);
   const fullDates = points.map((point) =>
     new Date(point.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
@@ -1192,6 +1194,23 @@ function renderCalmTrend() {
         },
       },
     },
+  });
+}
+
+function formatTrendAxisLabel(isoDate, previousIsoDate) {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const previousDate = previousIsoDate ? new Date(previousIsoDate) : null;
+  const includeYear =
+    !previousDate ||
+    Number.isNaN(previousDate.getTime()) ||
+    previousDate.getFullYear() !== date.getFullYear();
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(includeYear ? { year: "numeric" } : {}),
   });
 }
 

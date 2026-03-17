@@ -134,7 +134,7 @@ async function stubExternalModules(page, cloudState) {
   await page.route("https://fonts.gstatic.com/**", (route) => route.abort());
 }
 
-test("app renders long-target emoji controls and secondary abort row from cloud state", async () => {
+test("app renders long-target emoji controls in sad-neutral-happy order with abort beneath", async () => {
   const server = await startStaticServer();
   const executablePath = await resolveChromiumExecutable(server.rootDir);
   const browser = await chromium.launch({
@@ -209,12 +209,28 @@ test("app renders long-target emoji controls and secondary abort row from cloud 
     assert.equal(await page.locator("#abort-controls").isVisible(), true);
 
     const sessionControlsBox = await page.locator("#session-controls").boundingBox();
+    const resultActionsBox = await page.locator("#result-actions").boundingBox();
     const abortControlsBox = await page.locator("#abort-controls").boundingBox();
+    const struggleBox = await page.locator("#struggle-btn").boundingBox();
+    const middleBox = await page.locator("#middle-btn").boundingBox();
+    const successBox = await page.locator("#success-btn").boundingBox();
     assert.ok(sessionControlsBox);
+    assert.ok(resultActionsBox);
     assert.ok(abortControlsBox);
+    assert.ok(struggleBox);
+    assert.ok(middleBox);
+    assert.ok(successBox);
     assert.ok(
-      abortControlsBox.y > sessionControlsBox.y + sessionControlsBox.height - 1,
-      "abort controls should render below the primary start/stop row"
+      struggleBox.x < middleBox.x && middleBox.x < successBox.x,
+      "long-target buttons should render in sad-neutral-happy order"
+    );
+    assert.ok(
+      abortControlsBox.y > resultActionsBox.y + resultActionsBox.height - 1,
+      "abort controls should render below the outcome row"
+    );
+    assert.ok(
+      abortControlsBox.x <= resultActionsBox.x + 1,
+      "abort row should be left-justified"
     );
   } finally {
     await page.close();
