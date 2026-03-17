@@ -1,5 +1,4 @@
 node_modules/
 .playwright-browsers/
 .mobile-*.mjs
-package-lock.json
-package.json
+.screenshots/

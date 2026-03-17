@@ -44,6 +44,14 @@ service cloud.firestore {
 3. Click `Sign in with Google`.
 4. Confirm the cloud badge shows `Cloud sync active`.
 
+## Testing
+
+- Run the full suite with `npm test`.
+- Run only unit tests with `npm run test:unit`.
+- Run the browser smoke test with `npm run test:e2e`.
+
+The browser smoke test serves the app locally and stubs Firebase/Chart CDN modules so it can run offline without touching your real backend.
+
 ## Deploy
 
 Deploy as a static site to GitHub Pages, Cloudflare Pages, or Netlify.

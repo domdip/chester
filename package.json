@@ -1,0 +1,26 @@
+{
+  "name": "sep",
+  "version": "1.0.0",
+  "description": "A static web app for running daily separation training ladders inspired by Julie Naismith-style sub-threshold protocols, with Firebase cloud sync.",
+  "main": "app.js",
+  "scripts": {
+    "test": "node --test",
+    "test:unit": "node --test tests/logic.test.mjs",
+    "test:e2e": "node --test tests/app.smoke.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/domdip/chester.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/domdip/chester/issues"
+  },
+  "homepage": "https://github.com/domdip/chester#readme",
+  "devDependencies": {
+    "playwright": "^1.58.2"
+  }
+}

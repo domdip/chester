@@ -82,6 +82,7 @@ const dayTargetDurationEl = document.getElementById("day-target-duration");
 const sessionTypeLabelEl = document.getElementById("session-type-label");
 const timerEl = document.getElementById("timer");
 const sessionControlsEl = document.getElementById("session-controls");
+const abortControlsEl = document.getElementById("abort-controls");
 const resultActionsEl = document.getElementById("result-actions");
 const completionPanelEl = document.getElementById("completion-panel");
 const completionMessageEl = document.getElementById("completion-message");
@@ -848,15 +849,36 @@ function renderPlan() {
     targetBlockEl.hidden = false;
     timerEl.hidden = false;
     sessionControlsEl.hidden = false;
+    abortControlsEl.hidden = false;
     resultActionsEl.hidden = false;
     completionPanelEl.hidden = true;
     if (session.kind === "long-target") {
-      successBtn.textContent = "Mark Thumbs Up";
-      struggleBtn.textContent = "Mark Thumbs Down";
+      successBtn.textContent = "😊";
+      successBtn.setAttribute("aria-label", "Mark thumbs up");
+      successBtn.title = "Thumbs up";
+      struggleBtn.textContent = "☹️";
+      struggleBtn.setAttribute("aria-label", "Mark thumbs down");
+      struggleBtn.title = "Thumbs down";
+      middleBtn.textContent = "😐";
+      middleBtn.setAttribute("aria-label", "Mark middle");
+      middleBtn.title = "Middle";
+      successBtn.classList.add("emoji-btn");
+      struggleBtn.classList.add("emoji-btn");
+      middleBtn.classList.add("emoji-btn");
       middleBtn.hidden = false;
     } else {
       successBtn.textContent = "Mark Calm Success";
       struggleBtn.textContent = "Mark Stress Signal";
+      successBtn.setAttribute("aria-label", "Mark calm success");
+      successBtn.title = "";
+      struggleBtn.setAttribute("aria-label", "Mark stress signal");
+      struggleBtn.title = "";
+      middleBtn.textContent = "Mark Middle";
+      middleBtn.setAttribute("aria-label", "Mark middle");
+      middleBtn.title = "";
+      successBtn.classList.remove("emoji-btn");
+      struggleBtn.classList.remove("emoji-btn");
+      middleBtn.classList.remove("emoji-btn");
       middleBtn.hidden = true;
     }
 
@@ -888,6 +910,7 @@ function renderPlan() {
   targetBlockEl.hidden = true;
   timerEl.hidden = true;
   sessionControlsEl.hidden = true;
+  abortControlsEl.hidden = true;
   resultActionsEl.hidden = true;
   completionPanelEl.hidden = false;
   middleBtn.hidden = true;

@@ -220,8 +220,21 @@ select {
   margin-top: 10px;
 }
 
-.push-right {
-  margin-left: auto;
+.session-secondary-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn.emoji-btn {
+  min-width: 62px;
+  min-height: 54px;
+  padding: 6px;
+  font-size: 1.65rem;
+  line-height: 1;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .btn {
