@@ -6,11 +6,13 @@ import {
   clampInt,
   getCalmTargetSeries,
   getLongestCalmTarget,
+  getRecoverableElapsedSeconds,
   isoDayFromDate,
   normalizeFailureMode,
   parseOutcomeInput,
   parseWarmupIndex,
   resolvePreferredState,
+  sanitizeActiveTimer,
 } from "../logic.mjs";
 
 test("clampInt coerces invalid and out-of-range values safely", () => {
@@ -34,6 +36,52 @@ test("normalizeFailureMode defaults unknown values to reduce", () => {
   assert.equal(normalizeFailureMode("weird"), "reduce");
   assert.equal(normalizeFailureMode("retry"), "retry");
   assert.equal(normalizeFailureMode("last-success"), "last-success");
+});
+
+test("sanitizeActiveTimer keeps recoverable timer fields and rejects invalid payloads", () => {
+  assert.deepEqual(
+    sanitizeActiveTimer({
+      status: "awaiting-outcome",
+      sessionId: " session-1 ",
+      dayPlanDateKey: "2026-03-17",
+      sessionIndex: 2,
+      sessionKind: "long-target",
+      targetDuration: 600,
+      startedAt: 1234567890,
+      lastKnownElapsed: 610,
+    }),
+    {
+      status: "awaiting-outcome",
+      sessionId: "session-1",
+      dayPlanDateKey: "2026-03-17",
+      sessionIndex: 2,
+      sessionKind: "long-target",
+      targetDuration: 600,
+      startedAt: 1234567890,
+      lastKnownElapsed: 610,
+    }
+  );
+  assert.equal(sanitizeActiveTimer({ startedAt: 0 }), null);
+});
+
+test("getRecoverableElapsedSeconds prefers wall clock progress but never goes backwards", () => {
+  const activeTimer = {
+    status: "running",
+    sessionId: "session-1",
+    dayPlanDateKey: "2026-03-17",
+    sessionIndex: 0,
+    sessionKind: "warmup",
+    targetDuration: 45,
+    startedAt: 1000,
+    lastKnownElapsed: 8,
+  };
+
+  assert.equal(getRecoverableElapsedSeconds(activeTimer, 14_800), 13);
+  assert.equal(getRecoverableElapsedSeconds(activeTimer, 2_000), 8);
+  assert.equal(
+    getRecoverableElapsedSeconds({ ...activeTimer, status: "awaiting-outcome", lastKnownElapsed: 17 }, 60_000),
+    17
+  );
 });
 
 test("parseOutcomeInput maps calm/stress aliases", () => {

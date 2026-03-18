@@ -238,3 +238,90 @@ test("app renders long-target emoji controls in sad-neutral-happy order with abo
     await server.close();
   }
 });
+
+test("app restores a finished timer from newer local backup after reload-style recovery", async () => {
+  const server = await startStaticServer();
+  const executablePath = await resolveChromiumExecutable(server.rootDir);
+  const browser = await chromium.launch({
+    executablePath,
+    headless: true,
+  });
+  const page = await browser.newPage({ viewport: { width: 430, height: 932 } });
+
+  const baseState = {
+    settings: {
+      startDuration: 20,
+      successIncreasePct: 20,
+      failureMode: "reduce",
+      failureReducePct: 10,
+    },
+    nextLongTarget: 90,
+    dayPlan: {
+      sessionId: "session-recover",
+      dateKey: getTodayKey(),
+      targetDuration: 90,
+      warmupCount: 1,
+      sessions: [
+        { kind: "warmup", duration: 30 },
+        { kind: "long-target", duration: 90 },
+      ],
+      currentIndex: 1,
+      targetOutcome: null,
+    },
+    history: [],
+    longSuccessStreak: 0,
+    updatedAt: Date.now() - 60_000,
+    ui: {
+      setupCompleted: true,
+      setupExpanded: false,
+    },
+  };
+
+  const localRecoveredState = {
+    ...baseState,
+    updatedAt: Date.now(),
+    activeTimer: {
+      status: "running",
+      sessionId: "session-recover",
+      dayPlanDateKey: getTodayKey(),
+      sessionIndex: 1,
+      sessionKind: "long-target",
+      targetDuration: 90,
+      startedAt: Date.now() - 120_000,
+      lastKnownElapsed: 12,
+    },
+  };
+
+  try {
+    await stubExternalModules(page, baseState);
+    await page.addInitScript(({ key, value }) => {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    }, {
+      key: "separation-training-state-v1:user123456",
+      value: localRecoveredState,
+    });
+    await page.goto(`${server.url}/index.html`);
+
+    await page.waitForFunction(() => {
+      const cloudStatus = document.getElementById("cloud-status")?.textContent || "";
+      return cloudStatus.includes("Cloud sync active");
+    });
+
+    await page.waitForFunction(() => {
+      const timer = document.getElementById("timer")?.textContent || "";
+      const successBtn = document.getElementById("success-btn");
+      return timer === "01:30" && successBtn instanceof HTMLButtonElement && successBtn.disabled === false;
+    });
+
+    assert.equal(await page.locator("#timer").textContent(), "01:30");
+    assert.equal(await page.locator("#start-btn").isEnabled(), false);
+    assert.equal(await page.locator("#stop-btn").isEnabled(), false);
+    assert.equal(await page.locator("#success-btn").isEnabled(), true);
+    assert.equal(await page.locator("#struggle-btn").isEnabled(), true);
+    assert.equal(await page.locator("#middle-btn").isEnabled(), true);
+  } finally {
+    await page.close();
+    await browser.close();
+    await server.close();
+  }
+});

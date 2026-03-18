@@ -40,6 +40,46 @@ export function normalizeFailureMode(value) {
   return "reduce";
 }
 
+export function sanitizeActiveTimer(activeTimer) {
+  if (!activeTimer || typeof activeTimer !== "object") return null;
+
+  const status = activeTimer.status === "awaiting-outcome" ? "awaiting-outcome" : "running";
+  const sessionKind = activeTimer.sessionKind === "long-target" ? "long-target" : "warmup";
+  const sessionId =
+    typeof activeTimer.sessionId === "string" && activeTimer.sessionId.trim()
+      ? activeTimer.sessionId.trim()
+      : null;
+  const dayPlanDateKey =
+    typeof activeTimer.dayPlanDateKey === "string" && activeTimer.dayPlanDateKey.trim()
+      ? activeTimer.dayPlanDateKey.trim()
+      : null;
+  const startedAt = Number.isFinite(activeTimer.startedAt)
+    ? Math.max(0, Math.floor(activeTimer.startedAt))
+    : 0;
+
+  if (!sessionId || !dayPlanDateKey || startedAt <= 0) return null;
+
+  return {
+    status,
+    sessionId,
+    dayPlanDateKey,
+    sessionIndex: clampInt(activeTimer.sessionIndex, 0, 100),
+    sessionKind,
+    targetDuration: clampInt(activeTimer.targetDuration, 1, 7200),
+    startedAt,
+    lastKnownElapsed: clampInt(activeTimer.lastKnownElapsed, 0, 7200),
+  };
+}
+
+export function getRecoverableElapsedSeconds(activeTimer, now = Date.now()) {
+  const sanitized = sanitizeActiveTimer(activeTimer);
+  if (!sanitized) return 0;
+  if (sanitized.status !== "running") return sanitized.lastKnownElapsed;
+
+  const computedElapsed = Math.floor((now - sanitized.startedAt) / 1000);
+  return Math.max(sanitized.lastKnownElapsed, clampInt(computedElapsed, 0, 7200));
+}
+
 export function parseOutcomeInput(value) {
   const normalized = String(value || "")
     .trim()

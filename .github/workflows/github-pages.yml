@@ -1,0 +1,115 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set deploy target
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "main" ]; then
+            echo "DEPLOY_DIR=." >> "$GITHUB_ENV"
+            echo "FIREBASE_CONFIG_SOURCE=firebase-config.js" >> "$GITHUB_ENV"
+            echo "DEPLOY_LABEL=production" >> "$GITHUB_ENV"
+          elif [ "${GITHUB_REF_NAME}" = "staging" ]; then
+            echo "DEPLOY_DIR=staging" >> "$GITHUB_ENV"
+            echo "FIREBASE_CONFIG_SOURCE=firebase-config.staging.js" >> "$GITHUB_ENV"
+            echo "DEPLOY_LABEL=staging" >> "$GITHUB_ENV"
+          else
+            echo "Unsupported branch ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Validate environment config
+        run: |
+          test -f "${FIREBASE_CONFIG_SOURCE}"
+
+      - name: Prepare gh-pages branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages
+            git worktree add /tmp/gh-pages gh-pages
+          else
+            git worktree add --detach /tmp/gh-pages
+            cd /tmp/gh-pages
+            git checkout --orphan gh-pages
+            find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          fi
+
+      - name: Copy site files
+        run: |
+          mkdir -p "/tmp/gh-pages/${DEPLOY_DIR}"
+
+          if [ "${DEPLOY_DIR}" = "." ]; then
+            rsync -av --delete \
+              --exclude '.git' \
+              --exclude '.github' \
+              --exclude 'node_modules' \
+              --exclude '.playwright-browsers' \
+              --exclude '.screenshots' \
+              --exclude 'tests' \
+              --exclude '.gitignore' \
+              --exclude 'README.md' \
+              --exclude 'package.json' \
+              --exclude 'package-lock.json' \
+              --exclude 'firebase-config.staging.js' \
+              --exclude 'staging' \
+              ./ "/tmp/gh-pages/${DEPLOY_DIR}/"
+          else
+            rsync -av --delete \
+              --exclude '.git' \
+              --exclude '.github' \
+              --exclude 'node_modules' \
+              --exclude '.playwright-browsers' \
+              --exclude '.screenshots' \
+              --exclude 'tests' \
+              --exclude '.gitignore' \
+              --exclude 'README.md' \
+              --exclude 'package.json' \
+              --exclude 'package-lock.json' \
+              --exclude 'firebase-config.staging.js' \
+              --exclude 'firebase-config.js' \
+              ./ "/tmp/gh-pages/${DEPLOY_DIR}/"
+          fi
+
+          cp "${FIREBASE_CONFIG_SOURCE}" "/tmp/gh-pages/${DEPLOY_DIR}/firebase-config.js"
+          touch /tmp/gh-pages/.nojekyll
+
+      - name: Commit and push
+        run: |
+          cd /tmp/gh-pages
+          git add .
+          if git diff --cached --quiet; then
+            echo "No changes to deploy."
+            exit 0
+          fi
+
+          git commit -m "Deploy ${DEPLOY_LABEL} from ${GITHUB_SHA}"
+          git push origin gh-pages
+
+      - name: Clean up worktree
+        if: always()
+        run: |
+          git worktree remove /tmp/gh-pages --force || true

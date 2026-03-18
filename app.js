@@ -17,12 +17,14 @@ import {
   clampInt,
   getCalmTargetSeries,
   getLongestCalmTarget,
+  getRecoverableElapsedSeconds,
   isoDayFromDate,
   isLongTargetPhase,
   normalizeFailureMode,
   parseWarmupIndex,
   randomInt,
   resolvePreferredState,
+  sanitizeActiveTimer,
   todayKey,
 } from "./logic.mjs";
 
@@ -41,6 +43,7 @@ const defaultState = {
   dayPlan: null,
   history: [],
   longSuccessStreak: 0,
+  activeTimer: null,
   updatedAt: 0,
   ui: {
     setupCompleted: false,
@@ -169,6 +172,9 @@ function bindEvents() {
   window.addEventListener("online", onNetworkOnline);
   window.addEventListener("resize", onViewportChanged);
   window.addEventListener("orientationchange", onViewportChanged);
+  window.addEventListener("pagehide", onPageHide);
+  window.addEventListener("pageshow", onPageShow);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", onViewportChanged);
   }
@@ -247,11 +253,11 @@ async function handleAuthStateChange(user) {
   populateSettingsForm();
   renderSettingsPanel();
   renderFailureSettingsState();
-  renderTimer(0);
+  setUiEnabled(true);
+  restoreActiveTimerFromState();
   renderPlan();
   renderHistory();
   renderStreak();
-  setUiEnabled(true);
   if (!statusMessage.textContent.includes("cloud read failed")) {
     setCloudStatus(`Cloud sync active (${currentUid.slice(0, 6)})`);
     const nextStep = getCurrentSession();
@@ -269,14 +275,13 @@ async function handleAuthStateChange(user) {
 }
 
 function renderSignedOutState() {
-  clearInterval(timerInterval);
-  running = false;
-  awaitingOutcome = false;
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
   ensureDayPlan();
   populateSettingsForm();
   renderSettingsPanel();
   renderFailureSettingsState();
-  renderTimer(0);
+  renderTimer(elapsed);
   renderPlan();
   renderHistory();
   renderStreak();
@@ -329,11 +334,7 @@ async function loadStateFromCloud() {
 
 function queueSaveState(options = {}) {
   const { isRetry = false } = options;
-  const payload = {
-    ...state,
-    updatedAt: Date.now(),
-  };
-  state.updatedAt = payload.updatedAt;
+  const payload = buildPersistedStatePayload();
   persistLocalBackupState(currentUid, payload);
   if (!stateDocRef) return;
   if (!isRetry) {
@@ -368,6 +369,20 @@ function queueSaveState(options = {}) {
     });
 }
 
+function buildPersistedStatePayload() {
+  const payload = {
+    ...state,
+    updatedAt: Date.now(),
+  };
+  state.updatedAt = payload.updatedAt;
+  return payload;
+}
+
+function persistStateLocally() {
+  const payload = buildPersistedStatePayload();
+  persistLocalBackupState(currentUid, payload);
+}
+
 function scheduleCloudRetry(delayMs = 8000) {
   if (cloudRetryTimer) return;
   cloudRetryTimer = setTimeout(() => {
@@ -380,6 +395,22 @@ function scheduleCloudRetry(delayMs = 8000) {
 function onNetworkOnline() {
   if (!stateDocRef) return;
   queueSaveState({ isRetry: true });
+}
+
+function onPageHide() {
+  snapshotActiveTimerState();
+}
+
+function onPageShow() {
+  refreshRecoveredTimerState();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    snapshotActiveTimerState();
+    return;
+  }
+  refreshRecoveredTimerState();
 }
 
 function onViewportChanged() {
@@ -444,6 +475,7 @@ function sanitizeState(raw) {
     longSuccessStreak: Number.isFinite(incoming.longSuccessStreak)
       ? Math.max(0, Math.floor(incoming.longSuccessStreak))
       : 0,
+    activeTimer: sanitizeActiveTimer(incoming.activeTimer),
     updatedAt: Number.isFinite(incoming.updatedAt) ? Math.max(0, Math.floor(incoming.updatedAt)) : 0,
     ui: {
       setupCompleted,
@@ -565,7 +597,19 @@ function onStartSession() {
   awaitingOutcome = false;
   elapsed = 0;
   startedAt = Date.now();
+  state.activeTimer = {
+    status: "running",
+    sessionId: state.dayPlan.sessionId || createSessionId(),
+    dayPlanDateKey: state.dayPlan.dateKey,
+    sessionIndex: state.dayPlan.currentIndex,
+    sessionKind: session.kind,
+    targetDuration: session.duration,
+    startedAt,
+    lastKnownElapsed: 0,
+  };
   renderPlan();
+  renderTimer(0);
+  queueSaveState();
 
   setStatus(`Step running (${session.kind}). Stay below threshold.`);
   startBtn.disabled = true;
@@ -575,41 +619,16 @@ function onStartSession() {
   middleBtn.disabled = true;
   middleBtn.hidden = session.kind !== "long-target";
 
-  timerInterval = setInterval(() => {
-    elapsed = Math.floor((Date.now() - startedAt) / 1000);
-    renderTimer(elapsed);
-
-    if (elapsed >= session.duration) {
-      clearInterval(timerInterval);
-      running = false;
-      awaitingOutcome = true;
-      stopBtn.disabled = true;
-      successBtn.disabled = false;
-      struggleBtn.disabled = false;
-      middleBtn.disabled = session.kind !== "long-target";
-      middleBtn.hidden = session.kind !== "long-target";
-      renderPlan();
-      setStatus(
-        session.kind === "long-target"
-          ? "Step duration reached. Record thumbs down, middle, or thumbs up."
-          : "Step duration reached. Record calm or stress."
-      );
-    }
-  }, 250);
+  startRunningTimerLoop();
 }
 
 function onStopEarly() {
   if (!running) return;
+  const session = getCurrentSession();
+  if (!session) return;
 
-  clearInterval(timerInterval);
-  running = false;
-  awaitingOutcome = true;
-  stopBtn.disabled = true;
-  successBtn.disabled = false;
-  struggleBtn.disabled = false;
-  middleBtn.disabled = session.kind !== "long-target";
-  middleBtn.hidden = session.kind !== "long-target";
-  renderPlan();
+  syncRunningTimerDisplay();
+  transitionToAwaitingOutcome(session, elapsed);
   setStatus(
     session.kind === "long-target"
       ? "Step stopped early. Record thumbs down, middle, or thumbs up."
@@ -648,12 +667,12 @@ function onAbortTrainingSession() {
   const shouldAbort = window.confirm("Abort the current training session?");
   if (!shouldAbort) return;
 
-  clearInterval(timerInterval);
+  syncRunningTimerDisplay();
+  clearRunningTimerLoop();
   const abortedActual = elapsed;
   const shouldLogAbort = running || abortedActual > 0 || awaitingOutcome;
-  running = false;
-  awaitingOutcome = false;
-  elapsed = 0;
+  resetRuntimeTimerState();
+  state.activeTimer = null;
   renderTimer(0);
 
   if (shouldLogAbort) {
@@ -744,8 +763,10 @@ function onRecordOutcome(outcome) {
     }
   }
 
+  state.activeTimer = null;
   queueSaveState();
   awaitingOutcome = false;
+  startedAt = null;
   renderPlan();
   renderHistory();
   renderStreak();
@@ -762,10 +783,9 @@ function onResetAll() {
   const shouldReset = window.confirm("Reset settings, plan, and history?");
   if (!shouldReset) return;
 
-  clearInterval(timerInterval);
   state = makeDefaultState();
-  running = false;
-  awaitingOutcome = false;
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
   ensureDayPlan();
   queueSaveState();
   populateSettingsForm();
@@ -781,6 +801,7 @@ function onResetAll() {
 function ensureDayPlan() {
   const today = todayKey();
 
+  if (hasRecoverableActiveTimer()) return;
   if (!state.dayPlan || state.dayPlan.dateKey !== today) {
     regenerateDayPlan(getSuggestedWarmupCount());
   }
@@ -945,6 +966,164 @@ function isEditingNextSessionConfig() {
 
 function renderTimer(seconds) {
   timerEl.textContent = formatSeconds(seconds);
+}
+
+function clearRunningTimerLoop() {
+  if (!timerInterval) return;
+  clearInterval(timerInterval);
+  timerInterval = null;
+}
+
+function resetRuntimeTimerState() {
+  running = false;
+  awaitingOutcome = false;
+  startedAt = null;
+  elapsed = 0;
+}
+
+function hasRecoverableActiveTimer() {
+  const timer = state.activeTimer;
+  if (!timer || !state.dayPlan) return false;
+  const session = state.dayPlan.sessions?.[state.dayPlan.currentIndex];
+  if (!session) return false;
+  return (
+    timer.sessionId === state.dayPlan.sessionId &&
+    timer.dayPlanDateKey === state.dayPlan.dateKey &&
+    timer.sessionIndex === state.dayPlan.currentIndex &&
+    timer.sessionKind === session.kind &&
+    timer.targetDuration === session.duration
+  );
+}
+
+function startRunningTimerLoop() {
+  clearRunningTimerLoop();
+  timerInterval = setInterval(() => {
+    syncRunningTimerDisplay();
+  }, 250);
+}
+
+function syncRunningTimerDisplay(now = Date.now()) {
+  if (!running || !state.activeTimer) return;
+
+  const session = getCurrentSession();
+  if (!session) {
+    clearRecoveredActiveTimer();
+    return;
+  }
+
+  const nextElapsed = Math.min(session.duration, getRecoverableElapsedSeconds(state.activeTimer, now));
+  if (state.activeTimer.lastKnownElapsed !== nextElapsed) {
+    state.activeTimer.lastKnownElapsed = nextElapsed;
+  }
+  if (elapsed !== nextElapsed) {
+    elapsed = nextElapsed;
+    renderTimer(elapsed);
+  }
+
+  if (nextElapsed >= session.duration) {
+    transitionToAwaitingOutcome(session, session.duration);
+    setStatus(
+      session.kind === "long-target"
+        ? "Step duration reached. Record thumbs down, middle, or thumbs up."
+        : "Step duration reached. Record calm or stress."
+    );
+  }
+}
+
+function transitionToAwaitingOutcome(session, actualElapsed) {
+  clearRunningTimerLoop();
+  running = false;
+  awaitingOutcome = true;
+  elapsed = Math.min(session.duration, Math.max(0, Math.floor(actualElapsed)));
+  if (state.activeTimer) {
+    state.activeTimer.status = "awaiting-outcome";
+    state.activeTimer.lastKnownElapsed = elapsed;
+  }
+  renderTimer(elapsed);
+  stopBtn.disabled = true;
+  successBtn.disabled = false;
+  struggleBtn.disabled = false;
+  middleBtn.disabled = session.kind !== "long-target";
+  middleBtn.hidden = session.kind !== "long-target";
+  renderPlan();
+  queueSaveState();
+}
+
+function clearRecoveredActiveTimer() {
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
+  if (!state.activeTimer) return;
+  state.activeTimer = null;
+  persistStateLocally();
+}
+
+function restoreActiveTimerFromState(options = {}) {
+  const { announce = true } = options;
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
+
+  if (!state.activeTimer) {
+    renderTimer(0);
+    return;
+  }
+
+  if (!hasRecoverableActiveTimer()) {
+    clearRecoveredActiveTimer();
+    renderPlan();
+    return;
+  }
+
+  const session = getCurrentSession();
+  if (!session) {
+    clearRecoveredActiveTimer();
+    renderPlan();
+    return;
+  }
+
+  elapsed = Math.min(session.duration, getRecoverableElapsedSeconds(state.activeTimer));
+  startedAt = state.activeTimer.startedAt;
+
+  if (state.activeTimer.status === "running" && elapsed < session.duration) {
+    running = true;
+    awaitingOutcome = false;
+    renderTimer(elapsed);
+    startRunningTimerLoop();
+    if (announce) {
+      setStatus(`Recovered in-progress ${session.kind} step after reload or app resume.`);
+    }
+    return;
+  }
+
+  state.activeTimer.status = "awaiting-outcome";
+  state.activeTimer.lastKnownElapsed = elapsed;
+  running = false;
+  awaitingOutcome = true;
+  renderTimer(elapsed);
+  renderPlan();
+  persistStateLocally();
+  if (announce) {
+    setStatus("Recovered a finished step. Record the outcome when you are ready.");
+  }
+}
+
+function snapshotActiveTimerState() {
+  if (!hasRecoverableActiveTimer()) return;
+  if (running && state.activeTimer) {
+    const session = getCurrentSession();
+    const nextElapsed = Math.min(
+      session?.duration || state.activeTimer.targetDuration,
+      getRecoverableElapsedSeconds(state.activeTimer)
+    );
+    state.activeTimer.lastKnownElapsed = nextElapsed;
+    elapsed = nextElapsed;
+  }
+  persistStateLocally();
+}
+
+function refreshRecoveredTimerState() {
+  if (!hasRecoverableActiveTimer()) return;
+  restoreActiveTimerFromState({ announce: false });
+  renderPlan();
 }
 
 function renderStreak() {
