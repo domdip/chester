@@ -1,0 +1,1810 @@
+import { firebaseConfig } from "./firebase-config.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.7.3/firebase-app.js";
+import {
+  getAuth,
+  getRedirectResult,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+} from "https://www.gstatic.com/firebasejs/11.7.3/firebase-auth.js";
+import { doc, getDoc, getFirestore, setDoc } from "https://www.gstatic.com/firebasejs/11.7.3/firebase-firestore.js";
+import { Chart, registerables } from "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/+esm";
+import {
+  buildSessionGroups,
+  calculateLongSuccessStreak,
+  clampInt,
+  getCalmTargetSeries,
+  getLongestCalmTarget,
+  getRecoverableElapsedSeconds,
+  isoDayFromDate,
+  isLongTargetPhase,
+  normalizeFailureMode,
+  parseWarmupIndex,
+  randomInt,
+  resolvePreferredState,
+  sanitizeActiveTimer,
+  todayKey,
+} from "./logic.mjs";
+
+const DEFAULT_WARMUP_COUNT = 4;
+const LONG_TARGET_THRESHOLD_SECONDS = 300;
+const LOCAL_STATE_KEY_PREFIX = "separation-training-state-v1";
+
+const defaultState = {
+  settings: {
+    startDuration: 20,
+    successIncreasePct: 20,
+    failureMode: "reduce",
+    failureReducePct: 10,
+  },
+  nextLongTarget: 20,
+  dayPlan: null,
+  history: [],
+  longSuccessStreak: 0,
+  activeTimer: null,
+  updatedAt: 0,
+  ui: {
+    setupCompleted: false,
+    setupExpanded: true,
+  },
+};
+
+let state = makeDefaultState();
+let timerInterval = null;
+let startedAt = null;
+let elapsed = 0;
+let running = false;
+let awaitingOutcome = false;
+let stateDocRef = null;
+let currentUid = null;
+let saveChain = Promise.resolve();
+let cloudRetryTimer = null;
+let viewportRefreshTimer = null;
+let viewportSettleTimer = null;
+let pendingCloudChanges = 0;
+let auth = null;
+let db = null;
+let googleProvider = null;
+let calmTrendChart = null;
+
+Chart.register(...registerables);
+
+const settingsForm = document.getElementById("settings-form");
+const settingsTitleEl = document.getElementById("settings-title");
+const settingsToggleBtn = document.getElementById("settings-toggle-btn");
+const startDurationRow = document.getElementById("start-duration-row");
+const startDurationInput = document.getElementById("start-duration");
+const successIncreasePctInput = document.getElementById("success-increase-pct");
+const failureModeInput = document.getElementById("failure-mode");
+const failureReducePctInput = document.getElementById("failure-reduce-pct");
+const targetDurationEl = document.getElementById("target-duration");
+const targetBlockEl = document.getElementById("target-block");
+const dayTargetDurationEl = document.getElementById("day-target-duration");
+const sessionTypeLabelEl = document.getElementById("session-type-label");
+const timerEl = document.getElementById("timer");
+const sessionControlsEl = document.getElementById("session-controls");
+const abortControlsEl = document.getElementById("abort-controls");
+const resultActionsEl = document.getElementById("result-actions");
+const completionPanelEl = document.getElementById("completion-panel");
+const completionMessageEl = document.getElementById("completion-message");
+const nextLongTargetInput = document.getElementById("next-long-target-input");
+const nextWarmupCountInput = document.getElementById("next-warmup-count-input");
+const startBtn = document.getElementById("start-btn");
+const stopBtn = document.getElementById("stop-btn");
+const abortSessionBtn = document.getElementById("abort-session-btn");
+const newLadderBtn = document.getElementById("new-ladder-btn");
+const successBtn = document.getElementById("success-btn");
+const struggleBtn = document.getElementById("struggle-btn");
+const middleBtn = document.getElementById("middle-btn");
+const statusMessage = document.getElementById("status-message");
+const historyBody = document.getElementById("history-body");
+const rowTemplate = document.getElementById("row-template");
+const streakEl = document.getElementById("streak");
+const longestCalmTargetEl = document.getElementById("longest-calm-target");
+const calmTrendEl = document.getElementById("calm-trend");
+const calmTrendChartEl = document.getElementById("calm-trend-chart");
+const planProgressPill = document.getElementById("plan-progress-pill");
+const resetBtn = document.getElementById("reset-btn");
+const cloudStatusEl = document.getElementById("cloud-status");
+const pendingSyncBadgeEl = document.getElementById("pending-sync-badge");
+const signInBtn = document.getElementById("sign-in-btn");
+const signOutBtn = document.getElementById("sign-out-btn");
+const userLabelEl = document.getElementById("user-label");
+const deployStampEl = document.getElementById("deploy-stamp");
+const settingsSaveBtn = settingsForm.querySelector("button[type='submit']");
+
+bootstrap();
+
+async function bootstrap() {
+  bindEvents();
+  renderDeployStamp();
+  setUiEnabled(false);
+  setStatus("Connecting to Firebase...");
+
+  try {
+    await initializeCloud();
+    try {
+      await getRedirectResult(auth);
+    } catch (error) {
+      console.error(error);
+      setStatus(`Sign-in redirect failed (${error.code || "unknown"}).`);
+    }
+    onAuthStateChanged(
+      auth,
+      (user) => {
+        handleAuthStateChange(user).catch((error) => {
+          console.error(error);
+          setCloudStatus("Cloud unavailable");
+          setStatus(`Auth sync failed (${describeError(error)}).`);
+        });
+      },
+      (error) => {
+        console.error(error);
+        setCloudStatus("Cloud unavailable");
+        setStatus(`Auth state listener failed (${describeError(error)}).`);
+      }
+    );
+  } catch (error) {
+    console.error(error);
+    state = makeDefaultState();
+    renderSignedOutState();
+    setCloudStatus("Cloud unavailable");
+    setStatus("Firebase connection failed. Check firebase-config.js and console errors.");
+  }
+}
+
+function bindEvents() {
+  settingsForm.addEventListener("submit", onSaveSettings);
+  settingsToggleBtn.addEventListener("click", onToggleSettingsPanel);
+  failureModeInput.addEventListener("change", renderFailureSettingsState);
+  signInBtn.addEventListener("click", onSignInClick);
+  signOutBtn.addEventListener("click", onSignOutClick);
+  startBtn.addEventListener("click", onStartSession);
+  stopBtn.addEventListener("click", onStopEarly);
+  abortSessionBtn.addEventListener("click", onAbortTrainingSession);
+  newLadderBtn.addEventListener("click", onNewLadderToday);
+  successBtn.addEventListener("click", () => onRecordOutcome("success"));
+  struggleBtn.addEventListener("click", () => onRecordOutcome("struggle"));
+  middleBtn.addEventListener("click", () => onRecordOutcome("middle"));
+  resetBtn.addEventListener("click", onResetAll);
+  window.addEventListener("online", onNetworkOnline);
+  window.addEventListener("resize", onViewportChanged);
+  window.addEventListener("orientationchange", onViewportChanged);
+  window.addEventListener("pagehide", onPageHide);
+  window.addEventListener("pageshow", onPageShow);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onViewportChanged);
+  }
+}
+
+async function initializeCloud() {
+  if (!isFirebaseConfigValid(firebaseConfig)) {
+    throw new Error("Missing Firebase config values");
+  }
+
+  const app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  db = getFirestore(app);
+  googleProvider = new GoogleAuthProvider();
+  googleProvider.setCustomParameters({ prompt: "select_account" });
+}
+
+async function handleAuthStateChange(user) {
+  if (!user) {
+    state = makeDefaultState();
+    currentUid = null;
+    stateDocRef = null;
+    if (cloudRetryTimer) {
+      clearTimeout(cloudRetryTimer);
+      cloudRetryTimer = null;
+    }
+    pendingCloudChanges = 0;
+    renderPendingSyncBadge();
+    renderSignedOutState();
+    setCloudStatus("Signed out");
+    setStatus("Sign in with Google to load your synced data.");
+    return;
+  }
+
+  currentUid = user.uid;
+  stateDocRef = doc(db, "users", currentUid, "app", "state");
+  setAuthUi(true, user.email || user.displayName || user.uid.slice(0, 6));
+  setCloudStatus(`Signed in (${currentUid.slice(0, 6)}), loading...`);
+  setStatus("Signed in. Loading cloud data...");
+  const localBackupState = loadLocalBackupState(currentUid);
+
+  try {
+    const cloudState = await loadStateFromCloud();
+    if (cloudState) {
+      const resolved = resolvePreferredState(cloudState, localBackupState);
+      state = resolved.state;
+      if (resolved.source === "local") {
+        setCloudStatus("Syncing local changes to cloud...");
+        queueSaveState();
+      }
+    } else if (localBackupState) {
+      state = localBackupState;
+      queueSaveState();
+      setStatus("Cloud state missing. Restored from local backup.");
+    } else {
+      state = makeDefaultState();
+      queueSaveState();
+    }
+  } catch (error) {
+    console.error(error);
+    if (localBackupState) {
+      state = localBackupState;
+      setCloudStatus("Cloud read failed, using local backup");
+      setStatus(`Cloud read failed (${describeError(error)}). Restored local backup and will retry sync.`);
+      queueSaveState();
+    } else {
+      state = makeDefaultState();
+      ensureDayPlan();
+      queueSaveState();
+      setCloudStatus("Signed in, cloud read failed");
+      setStatus(`Signed in, but cloud read failed (${describeError(error)}). Check Firestore rules.`);
+    }
+  }
+
+  ensureDayPlan();
+  populateSettingsForm();
+  renderSettingsPanel();
+  renderFailureSettingsState();
+  setUiEnabled(true);
+  restoreActiveTimerFromState();
+  renderPlan();
+  renderHistory();
+  renderStreak();
+  if (!statusMessage.textContent.includes("cloud read failed")) {
+    setCloudStatus(`Cloud sync active (${currentUid.slice(0, 6)})`);
+    const nextStep = getCurrentSession();
+    const lastSession = state.history[0];
+    if (nextStep) {
+      setStatus("Ready for your next step.");
+    } else if (lastSession && isTodayIso(lastSession.date)) {
+      setStatus("Today's session is complete. Start a new one anytime.");
+    } else if (lastSession) {
+      setStatus(`Last session: ${new Date(lastSession.date).toLocaleString()}. Ready for a new one?`);
+    } else {
+      setStatus("Ready to begin? Start your first session.");
+    }
+  }
+}
+
+function renderSignedOutState() {
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
+  ensureDayPlan();
+  populateSettingsForm();
+  renderSettingsPanel();
+  renderFailureSettingsState();
+  renderTimer(elapsed);
+  renderPlan();
+  renderHistory();
+  renderStreak();
+  setUiEnabled(false);
+  setAuthUi(false, "Not signed in");
+}
+
+async function onSignInClick() {
+  if (!auth || !googleProvider) return;
+  setStatus("Opening Google sign-in...");
+
+  try {
+    await signInWithPopup(auth, googleProvider);
+    setStatus("Sign-in complete. Loading cloud data...");
+    return;
+  } catch (error) {
+    const code = error?.code || "";
+    const shouldFallback =
+      code === "auth/popup-blocked" ||
+      code === "auth/popup-closed-by-user" ||
+      code === "auth/cancelled-popup-request" ||
+      code === "auth/operation-not-supported-in-this-environment";
+
+    if (!shouldFallback) {
+      console.error(error);
+      setStatus(`Popup sign-in failed (${code || "unknown"}).`);
+      return;
+    }
+  }
+
+  setStatus("Popup unavailable. Redirecting to Google sign-in...");
+  await signInWithRedirect(auth, googleProvider);
+}
+
+async function onSignOutClick() {
+  if (!auth) return;
+  await signOut(auth);
+}
+
+async function loadStateFromCloud() {
+  if (!stateDocRef) return;
+
+  const snapshot = await getDoc(stateDocRef);
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return sanitizeState(snapshot.data());
+}
+
+function queueSaveState(options = {}) {
+  const { isRetry = false } = options;
+  const payload = buildPersistedStatePayload();
+  persistLocalBackupState(currentUid, payload);
+  if (!stateDocRef) return;
+  if (!isRetry) {
+    pendingCloudChanges += 1;
+    renderPendingSyncBadge();
+  }
+  const firestorePayload = stripUndefinedDeep(payload);
+
+  saveChain = saveChain
+    .then(() => setDoc(stateDocRef, firestorePayload))
+    .then(() => {
+      if (cloudRetryTimer) {
+        clearTimeout(cloudRetryTimer);
+        cloudRetryTimer = null;
+      }
+      if (currentUid) {
+        setCloudStatus(`Cloud sync active (${currentUid.slice(0, 6)})`);
+      }
+      pendingCloudChanges = 0;
+      renderPendingSyncBadge();
+    })
+    .catch((error) => {
+      console.error(error);
+      if (isClientDataError(error)) {
+        setCloudStatus("Cloud save failed");
+        setStatus(`Save failed due to invalid local data (${describeError(error)}).`);
+        return;
+      }
+      setCloudStatus("Saved locally, retrying cloud...");
+      setStatus(`Cloud save failed (${describeError(error)}). Saved locally; retrying automatically.`);
+      scheduleCloudRetry();
+    });
+}
+
+function buildPersistedStatePayload() {
+  const payload = {
+    ...state,
+    updatedAt: Date.now(),
+  };
+  state.updatedAt = payload.updatedAt;
+  return payload;
+}
+
+function persistStateLocally() {
+  const payload = buildPersistedStatePayload();
+  persistLocalBackupState(currentUid, payload);
+}
+
+function scheduleCloudRetry(delayMs = 8000) {
+  if (cloudRetryTimer) return;
+  cloudRetryTimer = setTimeout(() => {
+    cloudRetryTimer = null;
+    if (!stateDocRef) return;
+    queueSaveState({ isRetry: true });
+  }, delayMs);
+}
+
+function onNetworkOnline() {
+  if (!stateDocRef) return;
+  queueSaveState({ isRetry: true });
+}
+
+function onPageHide() {
+  snapshotActiveTimerState();
+}
+
+function onPageShow() {
+  refreshRecoveredTimerState();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    snapshotActiveTimerState();
+    return;
+  }
+  refreshRecoveredTimerState();
+}
+
+function onViewportChanged() {
+  if (viewportRefreshTimer) clearTimeout(viewportRefreshTimer);
+  if (viewportSettleTimer) clearTimeout(viewportSettleTimer);
+  viewportRefreshTimer = setTimeout(() => {
+    viewportRefreshTimer = null;
+    // Force a clean chart reflow after orientation changes on mobile browsers.
+    if (calmTrendChart) {
+      calmTrendChart.destroy();
+      calmTrendChart = null;
+    }
+    const rerender = () => {
+      renderPlan();
+      renderHistory();
+      renderStreak();
+    };
+    requestAnimationFrame(rerender);
+    // Some mobile browsers settle viewport metrics late after rotation.
+    viewportSettleTimer = setTimeout(() => {
+      viewportSettleTimer = null;
+      rerender();
+    }, 380);
+  }, 220);
+}
+
+function makeDefaultState() {
+  return JSON.parse(JSON.stringify(defaultState));
+}
+
+function sanitizeState(raw) {
+  const base = makeDefaultState();
+  const incoming = raw && typeof raw === "object" ? raw : {};
+
+  const settings = {
+    ...base.settings,
+    ...(incoming.settings || {}),
+  };
+
+  settings.startDuration = clampInt(settings.startDuration, 3, 1800);
+  settings.successIncreasePct = clampInt(settings.successIncreasePct, 1, 100);
+  settings.failureMode = normalizeFailureMode(settings.failureMode);
+  settings.failureReducePct = clampInt(settings.failureReducePct, 1, 100);
+
+  const candidateTarget = Number.isFinite(incoming.nextLongTarget)
+    ? incoming.nextLongTarget
+    : settings.startDuration;
+  const history = Array.isArray(incoming.history)
+    ? incoming.history.slice(0, 500).map(sanitizeHistoryEntry).filter(Boolean)
+    : [];
+  const uiRaw = incoming.ui && typeof incoming.ui === "object" ? incoming.ui : {};
+  const hasExistingData = history.length > 0 || incoming.dayPlan !== null;
+  const setupCompleted = uiRaw.setupCompleted === true || hasExistingData;
+  const setupExpanded = setupCompleted ? false : true;
+
+  return {
+    ...base,
+    settings,
+    nextLongTarget: clampInt(candidateTarget, 3, 7200),
+    dayPlan: sanitizeDayPlan(incoming.dayPlan),
+    history,
+    longSuccessStreak: Number.isFinite(incoming.longSuccessStreak)
+      ? Math.max(0, Math.floor(incoming.longSuccessStreak))
+      : 0,
+    activeTimer: sanitizeActiveTimer(incoming.activeTimer),
+    updatedAt: Number.isFinite(incoming.updatedAt) ? Math.max(0, Math.floor(incoming.updatedAt)) : 0,
+    ui: {
+      setupCompleted,
+      setupExpanded,
+    },
+  };
+}
+
+function sanitizeDayPlan(dayPlan) {
+  if (!dayPlan || typeof dayPlan !== "object") return null;
+
+  const sessionsRaw = Array.isArray(dayPlan.sessions) ? dayPlan.sessions : [];
+  const derivedWarmupCount = sessionsRaw.filter((session) => session?.kind === "warmup").length;
+  const warmupCountFromState = Number.isFinite(dayPlan.warmupCount)
+    ? clampInt(dayPlan.warmupCount, 1, 20)
+    : clampInt(derivedWarmupCount || DEFAULT_WARMUP_COUNT, 1, 20);
+  const sessions = Array.isArray(dayPlan.sessions)
+    ? dayPlan.sessions
+        .map((session) => ({
+          kind: session?.kind === "long-target" ? "long-target" : "warmup",
+          duration: clampInt(session?.duration, 1, 7200),
+        }))
+        .slice(0, warmupCountFromState + 1)
+    : [];
+
+  if (sessions.length === 0) return null;
+
+  return {
+    sessionId:
+      typeof dayPlan.sessionId === "string" && dayPlan.sessionId.trim()
+        ? dayPlan.sessionId
+        : createSessionId(),
+    dateKey: typeof dayPlan.dateKey === "string" ? dayPlan.dateKey : todayKey(),
+    targetDuration: clampInt(dayPlan.targetDuration, 3, 7200),
+    warmupCount: warmupCountFromState,
+    sessions,
+    currentIndex: clampInt(dayPlan.currentIndex, 0, sessions.length),
+    targetOutcome:
+      dayPlan.targetOutcome === "success" ||
+      dayPlan.targetOutcome === "struggle" ||
+      dayPlan.targetOutcome === "middle"
+        ? dayPlan.targetOutcome
+        : null,
+  };
+}
+
+function populateSettingsForm() {
+  startDurationInput.value = state.settings.startDuration;
+  successIncreasePctInput.value = state.settings.successIncreasePct;
+  failureModeInput.value = state.settings.failureMode;
+  failureReducePctInput.value = state.settings.failureReducePct;
+}
+
+function renderFailureSettingsState() {
+  const mode = normalizeFailureMode(failureModeInput.value);
+  failureReducePctInput.disabled = mode !== "reduce";
+}
+
+function renderSettingsPanel() {
+  const uiState = state.ui || defaultState.ui;
+  const setupCompleted = !!uiState.setupCompleted;
+  const setupExpanded = !setupCompleted || !!uiState.setupExpanded;
+  const hasSessions = Array.isArray(state.history) && state.history.length > 0;
+
+  settingsForm.hidden = !setupExpanded;
+  settingsToggleBtn.hidden = !setupCompleted;
+  startDurationRow.hidden = hasSessions;
+  startDurationInput.disabled = hasSessions;
+  settingsToggleBtn.setAttribute(
+    "aria-label",
+    setupExpanded ? "Hide session setup" : "Show session setup"
+  );
+  settingsTitleEl.textContent = setupExpanded ? "Session Setup" : "Session Setup";
+}
+
+function onSaveSettings(event) {
+  event.preventDefault();
+
+  const hasSessions = Array.isArray(state.history) && state.history.length > 0;
+  const startDuration = hasSessions
+    ? clampInt(state.settings.startDuration, 3, 1800)
+    : clampInt(startDurationInput.value, 3, 1800);
+  const successIncreasePct = clampInt(successIncreasePctInput.value, 1, 100);
+  const failureMode = normalizeFailureMode(failureModeInput.value);
+  const failureReducePct = clampInt(failureReducePctInput.value, 1, 100);
+
+  state.settings = { startDuration, successIncreasePct, failureMode, failureReducePct };
+  state.ui.setupCompleted = true;
+  state.ui.setupExpanded = false;
+
+  if (state.history.length === 0) {
+    state.nextLongTarget = startDuration;
+    regenerateDayPlan();
+  }
+
+  queueSaveState();
+  renderSettingsPanel();
+  renderPlan();
+  setStatus("Settings saved.");
+}
+
+function onToggleSettingsPanel() {
+  if (!state.ui || !state.ui.setupCompleted) return;
+  state.ui.setupExpanded = !state.ui.setupExpanded;
+  renderSettingsPanel();
+  queueSaveState();
+}
+
+function onStartSession() {
+  if (running) return;
+
+  const session = getCurrentSession();
+  if (!session) {
+    setStatus("Today's plan is complete. Come back tomorrow.");
+    return;
+  }
+
+  running = true;
+  awaitingOutcome = false;
+  elapsed = 0;
+  startedAt = Date.now();
+  state.activeTimer = {
+    status: "running",
+    sessionId: state.dayPlan.sessionId || createSessionId(),
+    dayPlanDateKey: state.dayPlan.dateKey,
+    sessionIndex: state.dayPlan.currentIndex,
+    sessionKind: session.kind,
+    targetDuration: session.duration,
+    startedAt,
+    lastKnownElapsed: 0,
+  };
+  renderPlan();
+  renderTimer(0);
+  queueSaveState();
+
+  setStatus(`Step running (${session.kind}). Stay below threshold.`);
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  successBtn.disabled = true;
+  struggleBtn.disabled = true;
+  middleBtn.disabled = true;
+  middleBtn.hidden = session.kind !== "long-target";
+
+  startRunningTimerLoop();
+}
+
+function onStopEarly() {
+  if (!running) return;
+  const session = getCurrentSession();
+  if (!session) return;
+
+  syncRunningTimerDisplay();
+  transitionToAwaitingOutcome(session, elapsed);
+  setStatus(
+    session.kind === "long-target"
+      ? "Step stopped early. Record thumbs down, middle, or thumbs up."
+      : "Step stopped early. Record the observed outcome."
+  );
+}
+
+function onNewLadderToday() {
+  if (running || awaitingOutcome) {
+    setStatus("Finish the active session before starting a new one.");
+    return;
+  }
+
+  const requestedLongTarget = clampInt(nextLongTargetInput.value, 3, 7200);
+  const requestedWarmupCount = clampInt(nextWarmupCountInput.value, 1, 20);
+  state.nextLongTarget = requestedLongTarget;
+
+  regenerateDayPlan(requestedWarmupCount);
+  awaitingOutcome = false;
+  elapsed = 0;
+  renderTimer(0);
+  renderPlan();
+  queueSaveState();
+  setStatus(
+    `New session plan created. Long target ${formatSeconds(state.nextLongTarget)}, ${requestedWarmupCount} warmups.`
+  );
+}
+
+function onAbortTrainingSession() {
+  const session = getCurrentSession();
+  if (!session) {
+    setStatus("No active training session to abort.");
+    return;
+  }
+
+  const shouldAbort = window.confirm("Abort the current training session?");
+  if (!shouldAbort) return;
+
+  syncRunningTimerDisplay();
+  clearRunningTimerLoop();
+  const abortedActual = elapsed;
+  const shouldLogAbort = running || abortedActual > 0 || awaitingOutcome;
+  resetRuntimeTimerState();
+  state.activeTimer = null;
+  renderTimer(0);
+
+  if (shouldLogAbort) {
+    state.history.unshift({
+      date: new Date().toISOString(),
+      day: state.dayPlan.dateKey,
+      sessionId: state.dayPlan.sessionId || createSessionId(),
+      phase: session.kind === "long-target" ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
+      target: session.duration,
+      actual: Math.max(0, abortedActual),
+      outcome: "aborted",
+      notes: "Session aborted by user.",
+    });
+  }
+
+  state.dayPlan.currentIndex = state.dayPlan.sessions.length;
+  state.dayPlan.targetOutcome = "aborted";
+
+  queueSaveState();
+  renderPlan();
+  renderHistory();
+  setStatus(
+    shouldLogAbort
+      ? "Training session aborted. Start a new session when ready."
+      : "Training session cancelled before it started. Start a new session when ready."
+  );
+}
+
+function onRecordOutcome(outcome) {
+  if (running) return;
+
+  const session = getCurrentSession();
+  if (!session) return;
+
+  const actual = elapsed;
+  const completed = actual >= session.duration;
+  const isLongTarget = session.kind === "long-target";
+  const normalizedLongOutcome = normalizeLongOutcome(outcome);
+  const appliedOutcome = isLongTarget ? normalizedLongOutcome : outcome;
+  const notes = getOutcomeNotes({ isLongTarget, outcome: appliedOutcome, completed });
+
+  const entry = {
+    date: new Date().toISOString(),
+    day: state.dayPlan.dateKey,
+    sessionId: state.dayPlan.sessionId || createSessionId(),
+    phase: isLongTarget ? "Long target" : `Warmup ${state.dayPlan.currentIndex + 1}`,
+    target: session.duration,
+    actual,
+    outcome: appliedOutcome,
+    notes,
+  };
+
+  state.history.unshift(entry);
+
+  if (appliedOutcome === "success") {
+    state.dayPlan.currentIndex += 1;
+
+    if (isLongTarget) {
+      const factor = 1 + state.settings.successIncreasePct / 100;
+      state.nextLongTarget = Math.min(7200, Math.max(3, Math.round(session.duration * factor)));
+      state.longSuccessStreak += 1;
+      state.dayPlan.targetOutcome = "success";
+      setStatus(
+        `Long target logged as thumbs up. Next long target set to ${formatSeconds(state.nextLongTarget)}.`
+      );
+    } else {
+      setStatus("Warmup success logged. Move to the next warmup.");
+    }
+  } else if (isLongTarget && appliedOutcome === "middle") {
+    state.longSuccessStreak = 0;
+    state.dayPlan.targetOutcome = "middle";
+    state.dayPlan.currentIndex = state.dayPlan.sessions.length;
+    state.nextLongTarget = session.duration;
+    setStatus(
+      `Long target logged as middle. Next long target kept at ${formatSeconds(state.nextLongTarget)}.`
+    );
+  } else {
+    if (isLongTarget) {
+      state.longSuccessStreak = 0;
+      state.dayPlan.targetOutcome = "struggle";
+      state.dayPlan.currentIndex = state.dayPlan.sessions.length;
+      applyLongFailurePolicy(session.duration);
+    } else {
+      state.longSuccessStreak = 0;
+      state.dayPlan.targetOutcome = "struggle";
+      state.dayPlan.currentIndex = state.dayPlan.sessions.length;
+      setStatus("Warmup stress detected. End today's plan and reset tomorrow.");
+    }
+  }
+
+  state.activeTimer = null;
+  queueSaveState();
+  awaitingOutcome = false;
+  startedAt = null;
+  renderPlan();
+  renderHistory();
+  renderStreak();
+
+  startBtn.disabled = !getCurrentSession();
+  successBtn.disabled = true;
+  struggleBtn.disabled = true;
+  middleBtn.disabled = true;
+  elapsed = 0;
+  renderTimer(0);
+}
+
+function onResetAll() {
+  const shouldReset = window.confirm("Reset settings, plan, and history?");
+  if (!shouldReset) return;
+
+  state = makeDefaultState();
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
+  ensureDayPlan();
+  queueSaveState();
+  populateSettingsForm();
+  renderSettingsPanel();
+  renderFailureSettingsState();
+  renderPlan();
+  renderHistory();
+  renderStreak();
+  renderTimer(0);
+  setStatus("All data reset.");
+}
+
+function ensureDayPlan() {
+  const today = todayKey();
+
+  if (hasRecoverableActiveTimer()) return;
+  if (!state.dayPlan || state.dayPlan.dateKey !== today) {
+    regenerateDayPlan(getSuggestedWarmupCount());
+  }
+}
+
+function regenerateDayPlan(warmupCount = DEFAULT_WARMUP_COUNT) {
+  const targetDuration = clampInt(state.nextLongTarget, 3, 7200);
+  const safeWarmupCount = clampInt(warmupCount, 1, 20);
+  state.dayPlan = {
+    sessionId: createSessionId(),
+    dateKey: todayKey(),
+    targetDuration,
+    warmupCount: safeWarmupCount,
+    sessions: buildSessions(targetDuration, safeWarmupCount),
+    currentIndex: 0,
+    targetOutcome: null,
+  };
+}
+
+function buildSessions(targetDuration, warmupCount) {
+  const sessions = [];
+
+  for (let i = 0; i < warmupCount; i += 1) {
+    const isLongTarget = targetDuration >= LONG_TARGET_THRESHOLD_SECONDS;
+    const minWarmup = isLongTarget ? 10 : 1;
+    const maxWarmup = isLongTarget
+      ? 59
+      : Math.max(minWarmup, Math.floor(targetDuration / 3));
+    const rawDuration = randomInt(minWarmup, maxWarmup);
+    const duration = Math.min(targetDuration - 1, rawDuration);
+
+    sessions.push({
+      kind: "warmup",
+      duration: Math.max(1, duration),
+    });
+  }
+
+  sessions.push({
+    kind: "long-target",
+    duration: targetDuration,
+  });
+
+  return sessions;
+}
+
+function getCurrentSession() {
+  if (!state.dayPlan) return null;
+  return state.dayPlan.sessions[state.dayPlan.currentIndex] || null;
+}
+
+function renderPlan() {
+  ensureDayPlan();
+
+  const session = getCurrentSession();
+  const completedCount = Math.min(state.dayPlan.currentIndex, state.dayPlan.sessions.length);
+  const totalCount = state.dayPlan.sessions.length;
+
+  planProgressPill.textContent = `${completedCount} / ${totalCount} complete today`;
+  dayTargetDurationEl.textContent = formatSeconds(state.dayPlan.targetDuration);
+
+  if (session) {
+    const warmupIndex = state.dayPlan.currentIndex + 1;
+    const warmupCount = state.dayPlan.warmupCount || DEFAULT_WARMUP_COUNT;
+    sessionTypeLabelEl.textContent =
+      session.kind === "long-target" ? "Long Target Session" : `Warmup ${warmupIndex} of ${warmupCount}`;
+    targetDurationEl.textContent = formatSeconds(session.duration);
+  } else {
+    sessionTypeLabelEl.textContent = "No Active Session";
+    targetDurationEl.textContent = "00:00";
+  }
+
+  if (session) {
+    targetBlockEl.hidden = false;
+    timerEl.hidden = false;
+    sessionControlsEl.hidden = false;
+    resultActionsEl.hidden = false;
+    abortControlsEl.hidden = false;
+    completionPanelEl.hidden = true;
+    if (session.kind === "long-target") {
+      struggleBtn.textContent = "☹️";
+      struggleBtn.setAttribute("aria-label", "Mark thumbs down");
+      struggleBtn.title = "Thumbs down";
+      middleBtn.textContent = "😐";
+      middleBtn.setAttribute("aria-label", "Mark middle");
+      middleBtn.title = "Middle";
+      successBtn.textContent = "😊";
+      successBtn.setAttribute("aria-label", "Mark thumbs up");
+      successBtn.title = "Thumbs up";
+      successBtn.classList.add("emoji-btn");
+      struggleBtn.classList.add("emoji-btn");
+      middleBtn.classList.add("emoji-btn");
+      middleBtn.hidden = false;
+    } else {
+      struggleBtn.textContent = "☹️";
+      struggleBtn.setAttribute("aria-label", "Mark stress signal");
+      struggleBtn.title = "Stress signal";
+      successBtn.textContent = "😊";
+      successBtn.setAttribute("aria-label", "Mark calm success");
+      successBtn.title = "Calm success";
+      successBtn.classList.add("emoji-btn");
+      struggleBtn.classList.add("emoji-btn");
+      middleBtn.classList.remove("emoji-btn");
+      middleBtn.hidden = true;
+    }
+
+    if (running) {
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      abortSessionBtn.disabled = false;
+      successBtn.disabled = true;
+      struggleBtn.disabled = true;
+      middleBtn.disabled = true;
+    } else if (awaitingOutcome) {
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+      abortSessionBtn.disabled = false;
+      successBtn.disabled = false;
+      struggleBtn.disabled = false;
+      middleBtn.disabled = session.kind !== "long-target";
+    } else {
+      startBtn.disabled = !isUiEnabled();
+      stopBtn.disabled = true;
+      abortSessionBtn.disabled = !isUiEnabled();
+      successBtn.disabled = true;
+      struggleBtn.disabled = true;
+      middleBtn.disabled = true;
+    }
+    return;
+  }
+
+  targetBlockEl.hidden = true;
+  timerEl.hidden = true;
+  sessionControlsEl.hidden = true;
+  abortControlsEl.hidden = true;
+  resultActionsEl.hidden = true;
+  completionPanelEl.hidden = false;
+  middleBtn.hidden = true;
+
+  const lastSession = state.history[0];
+  if (lastSession && isTodayIso(lastSession.date)) {
+    completionMessageEl.textContent = "Congrats on doing today's session!";
+  } else if (lastSession) {
+    completionMessageEl.textContent = `Last session: ${new Date(lastSession.date).toLocaleString()}. Ready for a new one?`;
+  } else {
+    completionMessageEl.textContent = "Ready to begin? Start your first session.";
+  }
+  newLadderBtn.textContent = "Start New Session";
+  if (!isEditingNextSessionConfig()) {
+    nextLongTargetInput.value = String(clampInt(state.nextLongTarget, 3, 7200));
+    nextWarmupCountInput.value = String(getSuggestedWarmupCount());
+  }
+  nextLongTargetInput.disabled = !isUiEnabled();
+  nextWarmupCountInput.disabled = !isUiEnabled();
+
+  newLadderBtn.disabled = !isUiEnabled();
+}
+
+function isEditingNextSessionConfig() {
+  const active = document.activeElement;
+  return active === nextLongTargetInput || active === nextWarmupCountInput;
+}
+
+function renderTimer(seconds) {
+  timerEl.textContent = formatSeconds(seconds);
+}
+
+function clearRunningTimerLoop() {
+  if (!timerInterval) return;
+  clearInterval(timerInterval);
+  timerInterval = null;
+}
+
+function resetRuntimeTimerState() {
+  running = false;
+  awaitingOutcome = false;
+  startedAt = null;
+  elapsed = 0;
+}
+
+function hasRecoverableActiveTimer() {
+  const timer = state.activeTimer;
+  if (!timer || !state.dayPlan) return false;
+  const session = state.dayPlan.sessions?.[state.dayPlan.currentIndex];
+  if (!session) return false;
+  return (
+    timer.sessionId === state.dayPlan.sessionId &&
+    timer.dayPlanDateKey === state.dayPlan.dateKey &&
+    timer.sessionIndex === state.dayPlan.currentIndex &&
+    timer.sessionKind === session.kind &&
+    timer.targetDuration === session.duration
+  );
+}
+
+function startRunningTimerLoop() {
+  clearRunningTimerLoop();
+  timerInterval = setInterval(() => {
+    syncRunningTimerDisplay();
+  }, 250);
+}
+
+function syncRunningTimerDisplay(now = Date.now()) {
+  if (!running || !state.activeTimer) return;
+
+  const session = getCurrentSession();
+  if (!session) {
+    clearRecoveredActiveTimer();
+    return;
+  }
+
+  const nextElapsed = Math.min(session.duration, getRecoverableElapsedSeconds(state.activeTimer, now));
+  if (state.activeTimer.lastKnownElapsed !== nextElapsed) {
+    state.activeTimer.lastKnownElapsed = nextElapsed;
+  }
+  if (elapsed !== nextElapsed) {
+    elapsed = nextElapsed;
+    renderTimer(elapsed);
+  }
+
+  if (nextElapsed >= session.duration) {
+    transitionToAwaitingOutcome(session, session.duration);
+    setStatus(
+      session.kind === "long-target"
+        ? "Step duration reached. Record thumbs down, middle, or thumbs up."
+        : "Step duration reached. Record calm or stress."
+    );
+  }
+}
+
+function transitionToAwaitingOutcome(session, actualElapsed) {
+  clearRunningTimerLoop();
+  running = false;
+  awaitingOutcome = true;
+  elapsed = Math.min(session.duration, Math.max(0, Math.floor(actualElapsed)));
+  if (state.activeTimer) {
+    state.activeTimer.status = "awaiting-outcome";
+    state.activeTimer.lastKnownElapsed = elapsed;
+  }
+  renderTimer(elapsed);
+  stopBtn.disabled = true;
+  successBtn.disabled = false;
+  struggleBtn.disabled = false;
+  middleBtn.disabled = session.kind !== "long-target";
+  middleBtn.hidden = session.kind !== "long-target";
+  renderPlan();
+  queueSaveState();
+}
+
+function clearRecoveredActiveTimer() {
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
+  if (!state.activeTimer) return;
+  state.activeTimer = null;
+  persistStateLocally();
+}
+
+function restoreActiveTimerFromState(options = {}) {
+  const { announce = true } = options;
+  clearRunningTimerLoop();
+  resetRuntimeTimerState();
+
+  if (!state.activeTimer) {
+    renderTimer(0);
+    return;
+  }
+
+  if (!hasRecoverableActiveTimer()) {
+    clearRecoveredActiveTimer();
+    renderPlan();
+    return;
+  }
+
+  const session = getCurrentSession();
+  if (!session) {
+    clearRecoveredActiveTimer();
+    renderPlan();
+    return;
+  }
+
+  elapsed = Math.min(session.duration, getRecoverableElapsedSeconds(state.activeTimer));
+  startedAt = state.activeTimer.startedAt;
+
+  if (state.activeTimer.status === "running" && elapsed < session.duration) {
+    running = true;
+    awaitingOutcome = false;
+    renderTimer(elapsed);
+    startRunningTimerLoop();
+    if (announce) {
+      setStatus(`Recovered in-progress ${session.kind} step after reload or app resume.`);
+    }
+    return;
+  }
+
+  state.activeTimer.status = "awaiting-outcome";
+  state.activeTimer.lastKnownElapsed = elapsed;
+  running = false;
+  awaitingOutcome = true;
+  renderTimer(elapsed);
+  renderPlan();
+  persistStateLocally();
+  if (announce) {
+    setStatus("Recovered a finished step. Record the outcome when you are ready.");
+  }
+}
+
+function snapshotActiveTimerState() {
+  if (!hasRecoverableActiveTimer()) return;
+  if (running && state.activeTimer) {
+    const session = getCurrentSession();
+    const nextElapsed = Math.min(
+      session?.duration || state.activeTimer.targetDuration,
+      getRecoverableElapsedSeconds(state.activeTimer)
+    );
+    state.activeTimer.lastKnownElapsed = nextElapsed;
+    elapsed = nextElapsed;
+  }
+  persistStateLocally();
+}
+
+function refreshRecoveredTimerState() {
+  if (!hasRecoverableActiveTimer()) return;
+  restoreActiveTimerFromState({ announce: false });
+  renderPlan();
+}
+
+function renderStreak() {
+  streakEl.textContent = `Long-session calm streak: ${state.longSuccessStreak}`;
+  if (longestCalmTargetEl) {
+    const longestCalmTarget = getLongestCalmTarget(state.history);
+    longestCalmTargetEl.textContent = `Longest calm target: ${
+      longestCalmTarget === null ? "--:--" : formatSeconds(longestCalmTarget)
+    }`;
+  }
+  try {
+    renderCalmTrend();
+  } catch (error) {
+    console.error(error);
+    if (calmTrendEl) calmTrendEl.hidden = true;
+    if (calmTrendChart) {
+      calmTrendChart.destroy();
+      calmTrendChart = null;
+    }
+  }
+}
+
+function renderDeployStamp() {
+  if (!deployStampEl) return;
+
+  const loadedAt = new Date().toLocaleString();
+  const pageModified =
+    typeof document.lastModified === "string" && document.lastModified.trim()
+      ? new Date(document.lastModified)
+      : null;
+  const isValidModified = pageModified instanceof Date && !Number.isNaN(pageModified.getTime());
+  const modifiedText = isValidModified ? pageModified.toLocaleString() : "unknown";
+
+  deployStampEl.textContent = `Deployment stamp: ${modifiedText} | Loaded: ${loadedAt}`;
+}
+
+function renderHistory() {
+  if (!historyBody || !rowTemplate) return;
+  historyBody.innerHTML = "";
+
+  const sessionGroups = buildSessionGroups(state.history).slice(0, 100);
+  sessionGroups.forEach((group) => {
+    const latestEntry = group.entries[0];
+    const longTargetEntry = group.entries.find((entry) => isLongTargetPhase(entry.phase));
+    const warmups = group.entries
+      .filter((entry) => parseWarmupIndex(entry.phase) !== null)
+      .sort((a, b) => parseWarmupIndex(a.phase) - parseWarmupIndex(b.phase));
+
+    const row = rowTemplate.content.cloneNode(true);
+    setCellText(row, ".date", new Date(latestEntry.date).toLocaleString());
+    setCellText(row, ".target", longTargetEntry ? formatSeconds(longTargetEntry.target) : "-");
+    setCellText(row, ".actual", longTargetEntry ? formatSeconds(longTargetEntry.actual) : "-");
+    setCellText(row, ".phase", longTargetEntry ? "Long target" : latestEntry.phase || "-");
+
+    const outcomeCell = row.querySelector(".outcome");
+    let outcomeText = "In progress";
+    let outcomeClass = "neutral";
+
+    if (longTargetEntry) {
+      if (longTargetEntry.outcome === "success") {
+        outcomeText = "Thumbs up";
+        outcomeClass = "success";
+      } else if (longTargetEntry.outcome === "middle") {
+        outcomeText = "Middle";
+        outcomeClass = "neutral";
+      } else if (longTargetEntry.outcome === "aborted") {
+        outcomeText = "Aborted";
+        outcomeClass = "aborted";
+      } else {
+        outcomeText = "Thumbs down";
+        outcomeClass = "struggle";
+      }
+    } else if (latestEntry.outcome === "struggle") {
+      outcomeText = "Stress";
+      outcomeClass = "struggle";
+    } else if (latestEntry.outcome === "aborted") {
+      outcomeText = "Aborted";
+      outcomeClass = "aborted";
+    } else if (warmups.length > 0) {
+      outcomeText = "Aborted";
+      outcomeClass = "aborted";
+    }
+    if (outcomeCell) {
+      outcomeCell.textContent = outcomeText;
+      outcomeCell.className = `outcome ${outcomeClass}`;
+    }
+
+    const notesText =
+      longTargetEntry?.notes ||
+      (warmups.length > 0 ? "Session ended before long target." : latestEntry.notes);
+    setCellText(row, ".notes", notesText);
+    const actionsCell = row.querySelector(".actions");
+    if (actionsCell) {
+      actionsCell.classList.add("history-actions");
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn ghost small";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", () => deleteSessionGroup(group));
+      actionsCell.appendChild(deleteBtn);
+
+      if (canEditCompletedLongEntry(longTargetEntry)) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "btn ghost small";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => editCompletedLongRun(longTargetEntry));
+        actionsCell.appendChild(editBtn);
+      }
+      if (canEditLongOutcome(longTargetEntry)) {
+        const editOutcomeBtn = document.createElement("button");
+        editOutcomeBtn.type = "button";
+        editOutcomeBtn.className = "btn ghost small";
+        editOutcomeBtn.textContent = "Outcome";
+        editOutcomeBtn.addEventListener("click", () => editLongRunOutcome(longTargetEntry));
+        actionsCell.appendChild(editOutcomeBtn);
+      }
+    }
+
+    const warmupToggleBtn = row.querySelector(".warmup-toggle");
+    const warmupRow = row.querySelector(".history-warmups-row");
+    const warmupList = row.querySelector(".warmup-list");
+
+    if (!warmupToggleBtn || !warmupRow || !warmupList) {
+      historyBody.appendChild(row);
+      return;
+    }
+
+    if (warmups.length === 0) {
+      warmupToggleBtn.textContent = "No warmups";
+      warmupToggleBtn.disabled = true;
+    } else {
+      warmupToggleBtn.textContent = `Warmups (${warmups.length})`;
+      warmups.forEach((warmupEntry) => {
+        const warmupOutcome =
+          warmupEntry.outcome === "success"
+            ? "Calm"
+            : warmupEntry.outcome === "aborted"
+            ? "Aborted"
+            : "Stress";
+        const warmupIndex = parseWarmupIndex(warmupEntry.phase) || 0;
+        const item = document.createElement("li");
+        const itemText = document.createElement("span");
+        itemText.textContent = `Warmup ${warmupIndex}: ${formatSeconds(warmupEntry.actual)} / ${formatSeconds(
+          warmupEntry.target
+        )} (${warmupOutcome})`;
+        item.appendChild(itemText);
+
+        warmupList.appendChild(item);
+      });
+
+      warmupToggleBtn.addEventListener("click", () => {
+        const isExpanded = warmupToggleBtn.getAttribute("aria-expanded") === "true";
+        warmupToggleBtn.setAttribute("aria-expanded", isExpanded ? "false" : "true");
+        warmupToggleBtn.textContent = isExpanded
+          ? `Warmups (${warmups.length})`
+          : "Hide warmups";
+        warmupRow.hidden = isExpanded;
+      });
+    }
+
+    historyBody.appendChild(row);
+  });
+}
+
+function renderCalmTrend() {
+  if (!calmTrendEl || !calmTrendChartEl) return;
+
+  const points = getCalmTargetSeries(state.history);
+  if (points.length < 2) {
+    calmTrendEl.hidden = true;
+    if (calmTrendChart) {
+      calmTrendChart.destroy();
+      calmTrendChart = null;
+    }
+    return;
+  }
+
+  calmTrendEl.hidden = false;
+  const labels = points.map((point, index) => formatTrendAxisLabel(point.date, points[index - 1]?.date));
+  const dataset = points.map((point) => point.target);
+  const fullDates = points.map((point) =>
+    new Date(point.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+  );
+  const ctx = calmTrendChartEl.getContext("2d");
+  if (!ctx) return;
+
+  if (calmTrendChart) {
+    calmTrendChart.data.labels = labels;
+    calmTrendChart.data.datasets[0].data = dataset;
+    calmTrendChart.data.datasets[0].fullDates = fullDates;
+    calmTrendChart.update();
+    return;
+  }
+
+  calmTrendChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Successful calm target",
+          data: dataset,
+          fullDates,
+          tension: 0.28,
+          borderColor: "#a85f28",
+          backgroundColor: "#a85f28",
+          pointRadius: 3.5,
+          pointHoverRadius: 5,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      aspectRatio: 640 / 220,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title(items) {
+              if (!items.length) return "";
+              const item = items[0];
+              return item.dataset.fullDates?.[item.dataIndex] || "";
+            },
+            label(context) {
+              return `Target: ${formatSeconds(Number(context.parsed.y))}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: "category",
+          ticks: { color: "#6f7d87" },
+          grid: { color: "#e3d7c7" },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            color: "#6f7d87",
+            callback(value) {
+              return formatSeconds(Number(value));
+            },
+          },
+          grid: { color: "#e3d7c7" },
+        },
+      },
+    },
+  });
+}
+
+function formatTrendAxisLabel(isoDate, previousIsoDate) {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const previousDate = previousIsoDate ? new Date(previousIsoDate) : null;
+  const includeYear =
+    !previousDate ||
+    Number.isNaN(previousDate.getTime()) ||
+    previousDate.getFullYear() !== date.getFullYear();
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(includeYear ? { year: "numeric" } : {}),
+  });
+}
+
+function setCellText(root, selector, text) {
+  const el = root.querySelector(selector);
+  if (el) el.textContent = text;
+}
+
+function canEditCompletedLongEntry(entry) {
+  return (
+    !!entry &&
+    isLongTargetPhase(entry.phase) &&
+    (entry.outcome === "success" || entry.outcome === "struggle" || entry.outcome === "middle") &&
+    Number.isFinite(entry.target) &&
+    Number.isFinite(entry.actual)
+  );
+}
+
+function canEditLongOutcome(entry) {
+  return !!entry && isLongTargetPhase(entry.phase);
+}
+
+function deleteSessionGroup(group) {
+  if (!group || !Number.isFinite(group.startIndex) || !Number.isFinite(group.count) || group.count < 1) return;
+  const label = group.entries[0]?.date
+    ? new Date(group.entries[0].date).toLocaleString()
+    : "this session";
+  const shouldDelete = window.confirm(`Delete session from ${label}?`);
+  if (!shouldDelete) return;
+
+  state.history.splice(group.startIndex, group.count);
+  recalculateLongSuccessStreak();
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus("Session deleted from history.");
+}
+
+function editCompletedLongRun(entry) {
+  if (!canEditCompletedLongEntry(entry)) return;
+
+  const promptValue = window.prompt(
+    "Set new actual duration (seconds):",
+    String(clampInt(entry.actual, 0, 7200))
+  );
+  if (promptValue === null) return;
+
+  const parsed = Number.parseInt(promptValue, 10);
+  if (!Number.isFinite(parsed)) {
+    setStatus("Invalid duration. Enter a whole number of seconds.");
+    return;
+  }
+
+  const updatedActual = clampInt(parsed, 0, 7200);
+  const currentOutcomeLabel = getLongOutcomePromptLabel(entry.outcome);
+  const outcomeInput = window.prompt(
+    "Set outcome (`thumbs up`, `middle`, or `thumbs down`):",
+    currentOutcomeLabel
+  );
+  if (outcomeInput === null) return;
+
+  const updatedOutcome = parseLongOutcomeInput(outcomeInput);
+  if (!updatedOutcome) {
+    setStatus("Invalid outcome. Use `thumbs up`, `middle`, or `thumbs down`.");
+    return;
+  }
+
+  entry.actual = updatedActual;
+  entry.outcome = updatedOutcome;
+  entry.notes = getOutcomeNotes({ isLongTarget: true, outcome: updatedOutcome, completed: true });
+
+  recalculateLongSuccessStreak();
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus(
+    `Long run updated: ${formatSeconds(updatedActual)} (${formatLongOutcomeLabel(updatedOutcome)}).`
+  );
+}
+
+function editLongRunOutcome(entry) {
+  if (!canEditLongOutcome(entry)) return;
+
+  const currentOutcomeLabel = getLongOutcomePromptLabel(entry.outcome);
+  const outcomeInput = window.prompt(
+    "Set long-run outcome (`thumbs up`, `middle`, or `thumbs down`):",
+    currentOutcomeLabel
+  );
+  if (outcomeInput === null) return;
+
+  const updatedOutcome = parseLongOutcomeInput(outcomeInput);
+  if (!updatedOutcome) {
+    setStatus("Invalid outcome. Use `thumbs up`, `middle`, or `thumbs down`.");
+    return;
+  }
+
+  entry.outcome = updatedOutcome;
+  entry.notes = getOutcomeNotes({ isLongTarget: true, outcome: updatedOutcome, completed: true });
+
+  recalculateLongSuccessStreak();
+  queueSaveState();
+  renderHistory();
+  renderStreak();
+  setStatus(`Long-run outcome updated to ${formatLongOutcomeLabel(updatedOutcome)}.`);
+}
+
+function parseLongOutcomeInput(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "thumbs up" ||
+    normalized === "thumbsup" ||
+    normalized === "up" ||
+    normalized === "calm" ||
+    normalized === "success"
+  ) {
+    return "success";
+  }
+  if (normalized === "middle" || normalized === "neutral" || normalized === "mid") return "middle";
+  if (
+    normalized === "thumbs down" ||
+    normalized === "thumbsdown" ||
+    normalized === "down" ||
+    normalized === "stress" ||
+    normalized === "struggle"
+  ) {
+    return "struggle";
+  }
+  return null;
+}
+
+function normalizeLongOutcome(outcome) {
+  if (outcome === "middle") return "middle";
+  return outcome === "success" ? "success" : "struggle";
+}
+
+function getOutcomeNotes({ isLongTarget, outcome, completed }) {
+  if (isLongTarget && outcome === "middle") {
+    return completed
+      ? "Long target completed with neutral response (middle)."
+      : "Long target stopped early with neutral response (middle).";
+  }
+  if (outcome === "success") {
+    return completed
+      ? "Calm throughout planned duration."
+      : "Calm during shortened run.";
+  }
+  return completed
+    ? "Stress signs near/after planned duration."
+    : "Stress signs before planned duration.";
+}
+
+function getLongOutcomePromptLabel(outcome) {
+  if (outcome === "success") return "thumbs up";
+  if (outcome === "middle") return "middle";
+  return "thumbs down";
+}
+
+function formatLongOutcomeLabel(outcome) {
+  if (outcome === "success") return "Thumbs up";
+  if (outcome === "middle") return "Middle";
+  return "Thumbs down";
+}
+
+function recalculateLongSuccessStreak() {
+  state.longSuccessStreak = calculateLongSuccessStreak(state.history);
+}
+
+function localBackupKey(uid) {
+  return `${LOCAL_STATE_KEY_PREFIX}:${uid || "anon"}`;
+}
+
+function persistLocalBackupState(uid, payload) {
+  try {
+    window.localStorage.setItem(localBackupKey(uid), JSON.stringify(payload));
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+function loadLocalBackupState(uid) {
+  try {
+    const raw = window.localStorage.getItem(localBackupKey(uid));
+    if (!raw) return null;
+    return sanitizeState(JSON.parse(raw));
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+function setStatus(message) {
+  statusMessage.textContent = message;
+}
+
+function setCloudStatus(message) {
+  if (cloudStatusEl) {
+    cloudStatusEl.textContent = message;
+  }
+}
+
+function renderPendingSyncBadge() {
+  if (!pendingSyncBadgeEl) return;
+  const count = Math.max(0, pendingCloudChanges);
+  pendingSyncBadgeEl.hidden = count === 0;
+  pendingSyncBadgeEl.textContent = `Pending cloud sync: ${count}`;
+}
+
+function setUiEnabled(enabled) {
+  startDurationInput.disabled = !enabled;
+  successIncreasePctInput.disabled = !enabled;
+  failureModeInput.disabled = !enabled;
+  failureReducePctInput.disabled = !enabled || normalizeFailureMode(failureModeInput.value) !== "reduce";
+  resetBtn.disabled = !enabled;
+  settingsSaveBtn.disabled = !enabled;
+  settingsToggleBtn.disabled = !enabled;
+  startBtn.disabled = !enabled;
+  stopBtn.disabled = true;
+  abortSessionBtn.disabled = !enabled;
+  newLadderBtn.disabled = !enabled;
+  successBtn.disabled = true;
+  struggleBtn.disabled = true;
+  middleBtn.disabled = true;
+}
+
+function isUiEnabled() {
+  return !!settingsSaveBtn && settingsSaveBtn.disabled === false;
+}
+
+function setAuthUi(isSignedIn, label) {
+  signInBtn.disabled = isSignedIn;
+  signOutBtn.disabled = !isSignedIn;
+  userLabelEl.textContent = isSignedIn ? `Signed in: ${label}` : label;
+}
+
+function formatSeconds(totalSeconds) {
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = Math.floor(totalSeconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function sanitizeHistoryEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+
+  const date =
+    typeof entry.date === "string" && !Number.isNaN(new Date(entry.date).getTime())
+      ? entry.date
+      : new Date().toISOString();
+  const day =
+    typeof entry.day === "string" && entry.day.trim() ? entry.day : isoDayFromDate(date) || todayKey();
+  const phase = typeof entry.phase === "string" && entry.phase.trim() ? entry.phase : "Long target";
+  const notes = typeof entry.notes === "string" ? entry.notes : "";
+  const outcome =
+    entry.outcome === "success" ||
+    entry.outcome === "middle" ||
+    entry.outcome === "aborted"
+      ? entry.outcome
+      : "struggle";
+  const sanitized = {
+    date,
+    day,
+    phase,
+    target: clampInt(entry.target, 1, 7200),
+    actual: clampInt(entry.actual, 0, 7200),
+    outcome,
+    notes,
+  };
+  if (typeof entry.sessionId === "string" && entry.sessionId.trim()) {
+    sanitized.sessionId = entry.sessionId.trim();
+  }
+  return sanitized;
+}
+
+function describeError(error) {
+  if (error == null) return "no error details";
+  if (typeof error === "string") return error;
+
+  const code = typeof error.code === "string" && error.code.trim() ? error.code.trim() : "";
+  const message = typeof error.message === "string" && error.message.trim() ? error.message.trim() : "";
+  const name = typeof error.name === "string" && error.name.trim() ? error.name.trim() : "";
+  const asString = String(error);
+  const hasUsefulString = asString && asString !== "[object Object]";
+
+  if (code && message) return `${code}: ${message}`;
+  if (code) return code;
+  if (message) return message;
+  if (name && hasUsefulString) return `${name}: ${asString}`;
+  if (name) return name;
+  if (hasUsefulString) return asString;
+
+  try {
+    const compact = JSON.stringify(error);
+    if (compact && compact !== "{}") return compact;
+  } catch (jsonError) {
+    console.error(jsonError);
+  }
+
+  return `unclassified ${typeof error} error`;
+}
+
+function isClientDataError(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const message = typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  return (
+    code === "invalid-argument" ||
+    message.includes("unsupported field value") ||
+    message.includes("undefined") ||
+    message.includes("invalid data")
+  );
+}
+
+function stripUndefinedDeep(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripUndefinedDeep(item))
+      .filter((item) => item !== undefined);
+  }
+  if (value && typeof value === "object") {
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      const cleaned = stripUndefinedDeep(item);
+      if (cleaned !== undefined) output[key] = cleaned;
+    }
+    return output;
+  }
+  return value === undefined ? undefined : value;
+}
+
+function createSessionId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isTodayIso(isoDate) {
+  const date = new Date(isoDate);
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function getSuggestedWarmupCount() {
+  if (!Array.isArray(state.history) || state.history.length === 0) {
+    return DEFAULT_WARMUP_COUNT;
+  }
+
+  if (state.dayPlan && Number.isFinite(state.dayPlan.warmupCount)) {
+    return clampInt(state.dayPlan.warmupCount, 1, 20);
+  }
+
+  const latestDay = state.history[0]?.day;
+  if (!latestDay) return DEFAULT_WARMUP_COUNT;
+
+  let maxWarmup = 0;
+  for (const entry of state.history) {
+    if (entry.day !== latestDay) break;
+    const warmupIndex = parseWarmupIndex(entry.phase);
+    if (warmupIndex !== null) maxWarmup = Math.max(maxWarmup, warmupIndex);
+  }
+
+  return maxWarmup > 0 ? maxWarmup : DEFAULT_WARMUP_COUNT;
+}
+
+function applyLongFailurePolicy(currentTarget) {
+  const mode = normalizeFailureMode(state.settings.failureMode);
+
+  if (mode === "reduce") {
+    const factor = 1 - state.settings.failureReducePct / 100;
+    state.nextLongTarget = Math.max(3, Math.round(currentTarget * factor));
+    setStatus(
+      `Long target struggled. Next long target reduced to ${formatSeconds(state.nextLongTarget)}.`
+    );
+    return;
+  }
+
+  if (mode === "retry") {
+    state.nextLongTarget = currentTarget;
+    setStatus("Long target struggled. Same long target will be retried tomorrow.");
+    return;
+  }
+
+  if (mode === "last-success") {
+    const lastSuccessfulTarget = getLastSuccessfulLongTarget();
+    if (lastSuccessfulTarget !== null) {
+      state.nextLongTarget = lastSuccessfulTarget;
+      setStatus(
+        `Long target struggled. Next long target set to last successful duration (${formatSeconds(
+          state.nextLongTarget
+        )}).`
+      );
+      return;
+    }
+
+    state.nextLongTarget = currentTarget;
+    setStatus("Long target struggled. No previous success found, so the same target will be retried.");
+    return;
+  }
+}
+
+function getLastSuccessfulLongTarget() {
+  for (const entry of state.history) {
+    if (isLongTargetPhase(entry.phase) && entry.outcome === "success") {
+      return clampInt(entry.target, 3, 7200);
+    }
+  }
+  return null;
+}
+
+function isFirebaseConfigValid(config) {
+  const required = ["apiKey", "authDomain", "projectId", "appId"];
+  return !!config && required.every((key) => typeof config[key] === "string" && config[key].trim());
+}
